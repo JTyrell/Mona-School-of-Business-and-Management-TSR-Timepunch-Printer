@@ -17,17 +17,17 @@ function App() {
   const [totalSteps, setTotalSteps] = useState(0)
   const progressEndRef = useRef(null)
 
-  // win32print state
-  const [win32Available, setWin32Available] = useState(null)   // null = unknown
+  // win32print / CUPS state
+  const [printCap, setPrintCap] = useState(null)   // null = unknown
   const [win32Installing, setWin32Installing] = useState(false)
   const [win32Message, setWin32Message] = useState(null)
 
-  // Check win32print status on mount
+  // Check print capability on mount
   useEffect(() => {
     fetch('/api/win32print-status')
       .then(r => r.json())
-      .then(d => setWin32Available(d.available))
-      .catch(() => setWin32Available(false))
+      .then(d => setPrintCap(d))
+      .catch(() => setPrintCap({ available: false, platform: 'unknown', method: 'none', printer: null }))
   }, [])
 
   const scrollToBottom = () => {
@@ -41,7 +41,9 @@ function App() {
       const res = await fetch('/api/install-win32print', { method: 'POST' })
       const data = await res.json()
       if (res.ok && data.success) {
-        setWin32Available(data.available)
+        // Re-fetch full capability
+        const cap = await fetch('/api/win32print-status').then(r => r.json())
+        setPrintCap(cap)
         setWin32Message({ type: 'success', text: data.message })
       } else {
         setWin32Message({ type: 'error', text: data.error || 'Installation failed.' })
@@ -136,30 +138,53 @@ function App() {
     }
   }
 
+  const win32Available = printCap?.available ?? null
   const progressPct = totalSteps > 0 ? Math.round((currentStep / totalSteps) * 100) : 0
+
+  // Human-readable print method label
+  const printMethodLabel = () => {
+    if (!printCap) return 'Checking…'
+    if (printCap.method === 'win32print') return `Windows Print (pywin32)${printCap.printer ? ' — ' + printCap.printer : ''}`
+    if (printCap.method === 'cups') return `CUPS / lp${printCap.printer ? ' — ' + printCap.printer : ''}`
+    return 'Not available'
+  }
+
+  const platformLabel = printCap?.platform
+    ? printCap.platform.charAt(0).toUpperCase() + printCap.platform.slice(1)
+    : 'Unknown'
+
+  const installBtnLabel = () => {
+    if (win32Installing) return 'Installing…'
+    if (printCap?.platform === 'windows') return 'Install pywin32'
+    return 'Check CUPS Status'
+  }
 
   return (
     <div className="glass-panel">
       <h1>MSBM Timesheet Printer</h1>
       <p className="subtitle">Automated bi-weekly calculator and PDF generator</p>
 
-      {/* ── win32print banner ─────────────────────────────────────────── */}
-      <div className={`win32-banner ${win32Available ? 'win32-ok' : 'win32-off'}`}>
+      {/* ── Print capability banner ──────────────────────────────────── */}
+      <div className={`win32-banner ${win32Available === null ? 'win32-checking' : win32Available ? 'win32-ok' : 'win32-off'}`}>
         <div className="win32-badge">
           {win32Available === null ? '⏳' : win32Available ? '🖨️' : '⚠️'}
         </div>
         <div className="win32-body">
           <strong>
             {win32Available === null
-              ? 'Checking Windows print support…'
+              ? 'Checking print support…'
               : win32Available
-              ? 'Windows Direct Printing — Active'
-              : 'Windows Direct Printing — Not Installed'}
+              ? `Direct Printing Active — ${platformLabel}`
+              : `Direct Printing Unavailable — ${platformLabel}`}
           </strong>
           <p>
-            {win32Available
-              ? 'pywin32 is installed. The "Print All" button will send PDFs directly to your default Windows printer without opening any dialog.'
-              : 'Install pywin32 to enable one-click direct printing to your Windows printer. Without it, you must download the ZIP and print each PDF manually.'}
+            {win32Available === null
+              ? 'Detecting available print method for this platform…'
+              : win32Available
+              ? <>Method: <strong>{printMethodLabel()}</strong>. The "Print All" button will send PDFs directly to your printer with no dialog.</>
+              : printCap?.platform === 'windows'
+              ? 'pywin32 is not installed. Click the button to install it and enable one-click direct printing to your Windows printer.'
+              : 'CUPS (lp) is not found on this server. On Heroku, add heroku-buildpack-apt and an Aptfile containing "cups". On local Linux run: sudo apt install cups'}
           </p>
           {win32Message && (
             <p className={`win32-msg ${win32Message.type === 'error' ? 'win32-msg-error' : 'win32-msg-success'}`}>
@@ -174,7 +199,7 @@ function App() {
             onClick={handleInstallWin32}
             disabled={win32Installing}
           >
-            {win32Installing ? 'Installing…' : 'Enable Windows Printing'}
+            {installBtnLabel()}
           </button>
         )}
       </div>
@@ -299,7 +324,9 @@ function App() {
 
           <button id="btn-download" onClick={handleDownload}>⬇ Download ZIP Archive</button>
           <button id="btn-print" className="btn-secondary" onClick={handlePrint} disabled={!win32Available}>
-            {win32Available ? '🖨️ Print All (Windows Printer)' : '🖨️ Print All (install pywin32 first)'}
+            {win32Available
+              ? `🖨️ Print All (${printCap?.method === 'cups' ? 'CUPS' : 'Windows Printer'})`
+              : '🖨️ Print All (printing unavailable)'}
           </button>
           <button
             style={{ background: 'transparent', border: '1px solid #ccc', color: '#666', marginTop: '0.5rem' }}

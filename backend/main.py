@@ -18,16 +18,84 @@ if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 # ---------------------------------------------------------------------------
-# win32print availability check (Windows-only)
+# Cross-platform print capability detection
 # ---------------------------------------------------------------------------
 def _check_win32print():
+    """True only on Windows when pywin32 is installed."""
+    if sys.platform != "win32":
+        return False
     try:
-        import win32print
+        import win32print  # noqa: F401
         return True
     except ImportError:
         return False
 
-has_win32print = _check_win32print()
+
+def _check_cups():
+    """True on Linux/Mac when the CUPS 'lp' command is on PATH."""
+    if sys.platform == "win32":
+        return False
+    return shutil.which("lp") is not None
+
+
+def _get_print_capability():
+    """
+    Returns a dict describing the current printing capability:
+      platform  : 'windows' | 'linux' | 'darwin' | 'other'
+      method    : 'win32print' | 'cups' | 'none'
+      available : bool
+      printer   : name of default printer, or None
+    """
+    if sys.platform == "win32":
+        win32_ok = _check_win32print()
+        printer = None
+        if win32_ok:
+            try:
+                import win32print
+                printer = win32print.GetDefaultPrinter()
+            except Exception:
+                pass
+        return {
+            "platform": "windows",
+            "method": "win32print" if win32_ok else "none",
+            "available": win32_ok,
+            "printer": printer,
+        }
+    elif sys.platform == "darwin":
+        cups_ok = _check_cups()
+        printer = None
+        if cups_ok:
+            try:
+                r = subprocess.run(["lpstat", "-d"], capture_output=True, text=True, timeout=5)
+                line = r.stdout.strip()
+                if ":" in line:
+                    printer = line.split(":", 1)[1].strip()
+            except Exception:
+                pass
+        return {
+            "platform": "darwin",
+            "method": "cups" if cups_ok else "none",
+            "available": cups_ok,
+            "printer": printer,
+        }
+    else:
+        # Linux (including Heroku)
+        cups_ok = _check_cups()
+        printer = None
+        if cups_ok:
+            try:
+                r = subprocess.run(["lpstat", "-d"], capture_output=True, text=True, timeout=5)
+                line = r.stdout.strip()
+                if ":" in line:
+                    printer = line.split(":", 1)[1].strip()
+            except Exception:
+                pass
+        return {
+            "platform": "linux",
+            "method": "cups" if cups_ok else "none",
+            "available": cups_ok,
+            "printer": printer,
+        }
 
 app = FastAPI()
 
@@ -183,74 +251,145 @@ async def generate_timesheets(
 
 
 # ---------------------------------------------------------------------------
-# win32print status & install endpoints
+# Print status, install, and execute endpoints (cross-platform)
 # ---------------------------------------------------------------------------
 @app.get("/api/win32print-status")
 async def win32print_status():
-    """Returns whether win32print (pywin32) is currently installed."""
-    available = _check_win32print()
-    return JSONResponse(content={"available": available})
+    """
+    Returns full print capability info for the current platform.
+    Kept at this URL for backwards-compatibility with the frontend.
+    """
+    cap = _get_print_capability()
+    return JSONResponse(content=cap)
 
 
 @app.post("/api/install-win32print")
 async def install_win32print():
-    """Attempt to install pywin32 via pip in a subprocess."""
-    if sys.platform != "win32":
-        return JSONResponse(
-            status_code=400,
-            content={"error": "win32print is only supported on Windows."}
-        )
-    try:
-        result = await asyncio.to_thread(
-            subprocess.run,
-            [sys.executable, "-m", "pip", "install", "pywin32"],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            global has_win32print
-            has_win32print = _check_win32print()
+    """
+    Windows: installs pywin32 via pip.
+    Linux/Mac: CUPS is a system package — explains how to enable it.
+    """
+    if sys.platform == "win32":
+        if _check_win32print():
             return JSONResponse(content={
                 "success": True,
-                "message": "pywin32 installed successfully. Restart the server for full activation.",
-                "available": has_win32print,
+                "message": "pywin32 is already installed.",
+                "available": True,
+            })
+        try:
+            result = await asyncio.to_thread(
+                subprocess.run,
+                [sys.executable, "-m", "pip", "install", "pywin32"],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                cap = _get_print_capability()
+                return JSONResponse(content={
+                    "success": True,
+                    "message": "pywin32 installed. Restart the server to activate direct printing.",
+                    "available": cap["available"],
+                })
+            else:
+                return JSONResponse(
+                    status_code=500,
+                    content={"error": result.stderr or "pip install pywin32 failed."},
+                )
+        except Exception as e:
+            traceback.print_exc()
+            return JSONResponse(status_code=500, content={"error": str(e)})
+    else:
+        # Linux / Mac — CUPS is a system package, not a pip package
+        cups_ok = _check_cups()
+        if cups_ok:
+            return JSONResponse(content={
+                "success": True,
+                "message": "CUPS (lp) is already available on this system. Direct printing is enabled.",
+                "available": True,
             })
         else:
             return JSONResponse(
-                status_code=500,
-                content={"error": result.stderr or "pip install failed."},
+                status_code=400,
+                content={
+                    "error": (
+                        "CUPS is not installed on this system. "
+                        "On Ubuntu/Debian run: sudo apt-get install -y cups "
+                        "On Heroku add the heroku-buildpack-apt buildpack and create an Aptfile with 'cups'."
+                    ),
+                    "available": False,
+                },
             )
-    except Exception as e:
-        traceback.print_exc()
-        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 @app.post("/api/print")
 async def print_timesheets():
-    """Send all PDFs in temp_processing/outputs to the default Windows printer."""
-    if not _check_win32print():
+    """Send all PDFs in temp_processing/outputs to the system default printer."""
+    cap = _get_print_capability()
+
+    if not cap["available"]:
+        platform_hint = (
+            "Install pywin32 using the 'Enable Printing' button."
+            if sys.platform == "win32"
+            else "CUPS (lp) is not available on this server. Install it or download the ZIP."
+        )
         return JSONResponse(
             status_code=400,
-            content={"error": "win32print is not installed. Use the 'Enable Windows Printing' button to install it."},
+            content={"error": f"Direct printing is not available. {platform_hint}"},
         )
+
+    output_dir = os.path.abspath(os.path.join("temp_processing", "outputs"))
+    pdfs = sorted(
+        os.path.join(output_dir, f)
+        for f in os.listdir(output_dir)
+        if f.endswith(".pdf")
+    )
+
+    if not pdfs:
+        return JSONResponse(status_code=400, content={"error": "No PDFs found to print."})
+
     try:
-        import win32print
-        import win32api
+        if sys.platform == "win32" and cap["method"] == "win32print":
+            # ── Windows path ──────────────────────────────────────────
+            import win32print
+            import win32api
+            printer_name = win32print.GetDefaultPrinter()
+            for pdf_path in pdfs:
+                win32api.ShellExecute(0, "print", pdf_path, f'/d:"{printer_name}"', ".", 0)
+            return JSONResponse(content={
+                "success": True,
+                "message": f"{len(pdfs)} PDF(s) sent to Windows printer: {printer_name}",
+            })
+        else:
+            # ── Linux / Mac CUPS path ─────────────────────────────────
+            printer_name = cap.get("printer") or None
+            sent = 0
+            errors = []
+            for pdf_path in pdfs:
+                cmd = ["lp"]
+                if printer_name:
+                    cmd += ["-d", printer_name]
+                cmd.append(pdf_path)
+                result = await asyncio.to_thread(
+                    subprocess.run, cmd, capture_output=True, text=True, timeout=30
+                )
+                if result.returncode == 0:
+                    sent += 1
+                else:
+                    errors.append(f"{os.path.basename(pdf_path)}: {result.stderr.strip()}")
 
-        output_dir = os.path.abspath(os.path.join("temp_processing", "outputs"))
-        pdfs = [os.path.join(output_dir, f) for f in os.listdir(output_dir) if f.endswith(".pdf")]
-
-        if not pdfs:
-            return JSONResponse(status_code=400, content={"error": "No PDFs found to print."})
-
-        printer_name = win32print.GetDefaultPrinter()
-        for pdf_path in pdfs:
-            win32api.ShellExecute(0, "print", pdf_path, f'/d:"{printer_name}"', ".", 0)
-
-        return JSONResponse(content={
-            "success": True,
-            "message": f"{len(pdfs)} PDF(s) sent to printer: {printer_name}",
-        })
+            if errors:
+                return JSONResponse(
+                    status_code=207,
+                    content={
+                        "success": sent > 0,
+                        "message": f"{sent}/{len(pdfs)} PDF(s) sent to CUPS printer: {printer_name or 'default'}.",
+                        "errors": errors,
+                    },
+                )
+            return JSONResponse(content={
+                "success": True,
+                "message": f"{sent} PDF(s) sent to CUPS printer: {printer_name or 'default'}.",
+            })
     except Exception as e:
         traceback.print_exc()
         return JSONResponse(status_code=500, content={"error": str(e)})

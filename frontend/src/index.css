@@ -272,6 +272,11 @@ button:hover {
   border-color: rgba(254, 202, 87, 0.35);
 }
 
+.win32-checking {
+  background: rgba(105, 126, 193, 0.06);
+  border-color: rgba(105, 126, 193, 0.25);
+}
+
 .win32-badge {
   font-size: 1.8rem;
   flex-shrink: 0;
