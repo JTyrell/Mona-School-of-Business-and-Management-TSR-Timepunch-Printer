@@ -1,0 +1,11 @@
+{
+  "name": "timesheet-printer-monolith",
+  "version": "1.0.0",
+  "description": "Heroku Monolith Deployment for Timepunch Printer",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "postinstall": "cd frontend && npm install && npm run build"
+  }
+}
