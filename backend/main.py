@@ -171,7 +171,9 @@ async def generate_timesheets(
         _send_progress(session_id, "Received upload - saving file...", step=0)
 
         # Save uploaded file into "Excel Timesheets" directory
-        timesheets_dir = os.path.abspath(os.path.join(os.getcwd(), "Excel Timesheets"))
+        import tempfile
+        base_tmp = tempfile.gettempdir()
+        timesheets_dir = os.path.abspath(os.path.join(base_tmp, "Excel Timesheets"))
         os.makedirs(timesheets_dir, exist_ok=True)
 
         file_path = os.path.join(timesheets_dir, file.filename)
@@ -181,7 +183,7 @@ async def generate_timesheets(
         _send_progress(session_id, f"File saved: {file.filename}")
 
         # PDF Outputs go to a temporary dir
-        temp_dir = os.path.abspath("temp_processing")
+        temp_dir = os.path.abspath(os.path.join(base_tmp, "temp_processing"))
         output_dir = os.path.join(temp_dir, "outputs")
         os.makedirs(output_dir, exist_ok=True)
 
@@ -337,7 +339,9 @@ async def print_timesheets():
             content={"error": f"Direct printing is not available. {platform_hint}"},
         )
 
-    output_dir = os.path.abspath(os.path.join("temp_processing", "outputs"))
+    import tempfile
+    base_tmp = tempfile.gettempdir()
+    output_dir = os.path.abspath(os.path.join(base_tmp, "temp_processing", "outputs"))
     pdfs = sorted(
         os.path.join(output_dir, f)
         for f in os.listdir(output_dir)
