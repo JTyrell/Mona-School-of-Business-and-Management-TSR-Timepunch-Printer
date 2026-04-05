@@ -7,9 +7,6 @@ As requested, we implemented a **dual-folder setup**:
 1. `frontend/` - A responsive, dynamically animated Vite/React frontend adhering to the stunning #ac1928, #2341a4, #697ec1, and #ffffff MSBM color scheme.
 2. `backend/` - A FastAP Python application serving as the powerful API that seamlessly ingests requests and pushes the calculations through the original, reliable automation script.
 
-> [!NOTE]
-> Per your instructions, I made an exact logical copy of the original `timesheet_bot.py` functions, moving it to `backend/timesheet_bot.py`, and simply replaced the bottom input-gathering section so it could be programmatically driven by the API (using the new `process_timesheets()` function). 
-
 ## Verification & Execution
 To use your new application, you will need to open two separate terminals. Ensure you run these from the main folder containing both projects.
 
