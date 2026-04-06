@@ -17,7 +17,10 @@ def format_time_12h(t):
 def get_week_monday(date):
     return date - timedelta(days=date.weekday())
 
-def parse_excel(file_path, hourly_rate=516):
+class RateMismatchError(Exception):
+    pass
+
+def parse_excel(file_path, hourly_rate=516, ignore_mismatch=False):
     sheets_entries = {}
     xl = pd.ExcelFile(file_path)
 
@@ -36,12 +39,15 @@ def parse_excel(file_path, hourly_rate=516):
         header = df.iloc[header_row]
         date_col = None
         total_col = None
+        hours_col = None
         for idx, val in enumerate(header):
             val_str = str(val).upper()
             if 'DATE' in val_str:
                 date_col = idx
             if 'TOTAL' in val_str and 'LINE' in val_str:
                 total_col = idx
+            if 'HOUR' in val_str:
+                hours_col = idx
 
         if date_col is None or total_col is None:
             continue
@@ -60,8 +66,19 @@ def parse_excel(file_path, hourly_rate=516):
                 continue
 
             try:
-                hours = float(total_val) / hourly_rate
+                if hours_col is not None:
+                    hours = float(row[hours_col])
+                    if hours > 0 and total_val and str(total_val).strip():
+                        sheet_total = float(total_val)
+                        if not ignore_mismatch:
+                            implied_total = hours * hourly_rate
+                            if abs(implied_total - sheet_total) > 0.05:
+                                raise RateMismatchError("Calculated total does not match sheet total.")
+                else:
+                    hours = float(total_val) / hourly_rate
                 hours = round(hours, 2)
+            except RateMismatchError:
+                raise
             except Exception:
                 continue
 
@@ -559,7 +576,7 @@ async def _create_timesheet_pdf_async(biweek, initials, hourly_rate, output_file
 # Public entry points
 # ======================================================================
 
-def process_timesheets(excel_file, initials, hourly_rate, output_dir, run_headless=True, progress_callback=None):
+def process_timesheets(excel_file, initials, hourly_rate, output_dir, run_headless=True, progress_callback=None, ignore_mismatch=False):
     """
     Sync entry point (used via asyncio.to_thread from FastAPI, or directly from CLI).
     Accepts an optional progress_callback(msg, step, total) for live reporting.
@@ -568,7 +585,7 @@ def process_timesheets(excel_file, initials, hourly_rate, output_dir, run_headle
     pdf_files = []
 
     cb("Parsing Excel workbook...")
-    sheets_entries_map = parse_excel(excel_file, hourly_rate)
+    sheets_entries_map = parse_excel(excel_file, hourly_rate, ignore_mismatch=ignore_mismatch)
     if not sheets_entries_map:
         cb("No valid timesheet data found in the workbook.", status="error")
         return pdf_files
@@ -620,7 +637,7 @@ def process_timesheets(excel_file, initials, hourly_rate, output_dir, run_headle
     return pdf_files
 
 
-async def process_timesheets_async(excel_file, initials, hourly_rate, output_dir, run_headless=True, progress_callback=None):
+async def process_timesheets_async(excel_file, initials, hourly_rate, output_dir, run_headless=True, progress_callback=None, ignore_mismatch=False):
     """
     Async entry point for use inside FastAPI route handlers.
     """
@@ -628,7 +645,7 @@ async def process_timesheets_async(excel_file, initials, hourly_rate, output_dir
     pdf_files = []
 
     cb("Parsing Excel workbook...")
-    sheets_entries_map = parse_excel(excel_file, hourly_rate)
+    sheets_entries_map = parse_excel(excel_file, hourly_rate, ignore_mismatch=ignore_mismatch)
     if not sheets_entries_map:
         return pdf_files
 

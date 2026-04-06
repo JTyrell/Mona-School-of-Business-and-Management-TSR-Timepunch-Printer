@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, Form, Request
+from fastapi import FastAPI, UploadFile, File, Form, Request, BackgroundTasks
 from fastapi.responses import FileResponse, JSONResponse, HTMLResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -158,14 +158,17 @@ async def progress_stream(session_id: str):
 # ---------------------------------------------------------------------------
 @app.post("/api/generate")
 async def generate_timesheets(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     initials: str = Form(...),
     hourly_rate: str = Form(...),
     headless: str = Form("true"),
     session_id: str = Form("default"),
+    ignore_mismatch: str = Form("false"),
 ):
     try:
         run_headless = headless.lower() == "true"
+        ignore_mismatch_bool = ignore_mismatch.lower() == "true"
         rate = float(hourly_rate)
 
         _send_progress(session_id, "Received upload - saving file...", step=0)
@@ -194,8 +197,16 @@ async def generate_timesheets(
         _send_progress(session_id, "Parsing Excel workbook...")
 
         # Pre-parse to count total biweeks for progress reporting
-        from backend.timesheet_bot import parse_excel as _parse, group_into_biweeks as _group
-        sheets_map = _parse(file_path, rate)
+        from backend.timesheet_bot import parse_excel as _parse, group_into_biweeks as _group, RateMismatchError
+        try:
+            sheets_map = _parse(file_path, rate, ignore_mismatch=ignore_mismatch_bool)
+        except RateMismatchError as e:
+            _send_progress(session_id, "ERROR: Hourly rate mismatch detected.", status="error")
+            return JSONResponse(
+                status_code=409, 
+                content={"error": str(e), "mismatch": True}
+            )
+
         total_pdfs = 0
         for entries in sheets_map.values():
             total_pdfs += len(_group(entries))
@@ -218,6 +229,7 @@ async def generate_timesheets(
             return process_timesheets(
                 file_path, initials, rate, output_dir, run_headless,
                 progress_callback=lambda msg, step=None, total=None: _send_progress(session_id, msg, step, total),
+                ignore_mismatch=ignore_mismatch_bool
             )
 
         pdf_files = await asyncio.to_thread(_run_bot)
@@ -244,12 +256,51 @@ async def generate_timesheets(
             status="done",
         )
 
+        async def cleanup_files():
+            import asyncio
+            await asyncio.sleep(15)  # 15s buffer to ensure Print endpoints and files settle 
+            try:
+                if os.path.exists(file_path): os.remove(file_path)
+                if os.path.exists(output_dir):
+                    for f in os.listdir(output_dir):
+                        os.remove(os.path.join(output_dir, f))
+                if os.path.exists(zip_path): os.remove(zip_path)
+            except Exception:
+                pass
+
+        background_tasks.add_task(cleanup_files)
+
         return FileResponse(path=zip_path, filename="timesheets.zip", media_type="application/zip")
 
     except Exception as e:
         traceback.print_exc()
         _send_progress(session_id, f"ERROR: {str(e)}", status="error")
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# ---------------------------------------------------------------------------
+# Manual Cleanup endpoint
+# ---------------------------------------------------------------------------
+@app.post("/api/cleanup")
+async def force_cleanup():
+    """Immediately wipe temp directories. Triggered when frontend restarts."""
+    import tempfile
+    import shutil
+    base_tmp = tempfile.gettempdir()
+    excel_dir = os.path.abspath(os.path.join(base_tmp, "Excel Timesheets"))
+    temp_dir = os.path.abspath(os.path.join(base_tmp, "temp_processing", "outputs"))
+    zip_path = os.path.abspath(os.path.join(base_tmp, "temp_processing", "timesheets.zip"))
+    
+    try:
+        if os.path.exists(excel_dir): shutil.rmtree(excel_dir, ignore_errors=True)
+        if os.path.exists(temp_dir): shutil.rmtree(temp_dir, ignore_errors=True)
+        if os.path.exists(zip_path): os.remove(zip_path)
+        os.makedirs(excel_dir, exist_ok=True)
+        os.makedirs(temp_dir, exist_ok=True)
+    except Exception:
+        pass
+    
+    return JSONResponse(content={"success": True})
 
 
 # ---------------------------------------------------------------------------
@@ -314,9 +365,8 @@ async def install_win32print():
                 status_code=400,
                 content={
                     "error": (
-                        "CUPS is not installed on this system. "
-                        "On Ubuntu/Debian run: sudo apt-get install -y cups "
-                        "On Heroku add the heroku-buildpack-apt buildpack and create an Aptfile with 'cups'."
+                        "CUPS is not installed in the Docker container. "
+                        "Ensure 'cups-client' is added to the apt-get install step in the Dockerfile."
                     ),
                     "available": False,
                 },

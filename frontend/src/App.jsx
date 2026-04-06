@@ -39,14 +39,22 @@ function App() {
     setWin32Message(null)
     try {
       const res = await fetch('/api/install-win32print', { method: 'POST' })
-      const data = await res.json()
-      if (res.ok && data.success) {
-        // Re-fetch full capability
-        const cap = await fetch('/api/win32print-status').then(r => r.json())
-        setPrintCap(cap)
-        setWin32Message({ type: 'success', text: data.message })
+      
+      const contentType = res.headers.get("content-type");
+      if (contentType && contentType.includes("application/json")) {
+        const data = await res.json()
+        if (res.ok && data.success) {
+          // Re-fetch full capability
+          const cap = await fetch('/api/win32print-status').then(r => r.json())
+          setPrintCap(cap)
+          setWin32Message({ type: 'success', text: data.message })
+        } else {
+          setWin32Message({ type: 'error', text: data.error || 'Installation failed.' })
+        }
       } else {
-        setWin32Message({ type: 'error', text: data.error || 'Installation failed.' })
+         // This happens when Vercel proxies to a dead/unconfigured backend URL
+         const text = await res.text();
+         throw new Error(`The API proxy returned a non-JSON response (Status ${res.status}). Did you configure your backend URL in vercel.json?`);
       }
     } catch (err) {
       setWin32Message({ type: 'error', text: 'Could not reach server: ' + err.message })
@@ -55,8 +63,10 @@ function App() {
     }
   }
 
-  const handleSubmit = async (e) => {
-    e.preventDefault()
+  const [ignoreMismatch, setIgnoreMismatch] = useState(false)
+
+  const handleSubmit = async (e, forceIgnore = false) => {
+    if (e && e.preventDefault) e.preventDefault()
     if (!file) {
       setError('Please select an Excel file.')
       return
@@ -91,12 +101,34 @@ function App() {
     formData.append('hourly_rate', hourlyRate)
     formData.append('headless', headless ? 'true' : 'false')
     formData.append('session_id', sessionId)
+    formData.append('ignore_mismatch', forceIgnore ? 'true' : 'false')
 
     try {
       const response = await fetch('/api/generate', { method: 'POST', body: formData })
 
       if (!response.ok) {
-        const errData = await response.json()
+        let errData
+        const contentType = response.headers.get("content-type")
+        if (contentType && contentType.includes("application/json")) {
+           errData = await response.json()
+        } else {
+           throw new Error(`API returned Status ${response.status}. Proxy misconfigured?`)
+        }
+
+        if (response.status === 409 && errData.mismatch) {
+           const proceed = window.confirm(
+             "Mismatch Detected: The hourly rate you entered does not geometrically match the totals inside the spreadsheet.\n\n" +
+             "Do you want to continue using your entered rate (" + hourlyRate + ") while prioritizing the exact hours extracted from the spreadsheet?"
+           )
+           if (proceed) {
+              setIgnoreMismatch(true)
+              evtSource.close()
+              return await handleSubmit(null, true)
+           } else {
+              throw new Error("Action cancelled by user due to rate mismatch.")
+           }
+        }
+        
         throw new Error(errData.error || 'Failed to generate timesheets')
       }
 
@@ -104,11 +136,14 @@ function App() {
       if (blob.size < 100) throw new Error('ZIP appears empty. Check server logs.')
       setZipBlob(blob)
       setSuccess(true)
+      setIgnoreMismatch(false)
     } catch (err) {
       setError(err.message)
     } finally {
-      setLoading(false)
-      evtSource.close()
+      if (!forceIgnore) {
+        setLoading(false)
+        evtSource.close()
+      }
     }
   }
 
@@ -127,11 +162,16 @@ function App() {
   const handlePrint = async () => {
     try {
       const response = await fetch('/api/print', { method: 'POST' })
-      const data = await response.json()
-      if (!response.ok) {
-        alert(data.error + '\n\nPlease download the ZIP and print the PDFs manually.')
+      const contentType = response.headers.get("content-type")
+      if (contentType && contentType.includes("application/json")) {
+        const data = await response.json()
+        if (!response.ok) {
+          alert(data.error + '\n\nPlease download the ZIP and print the PDFs manually.')
+        } else {
+          alert('✅ ' + data.message)
+        }
       } else {
-        alert('✅ ' + data.message)
+        throw new Error(`API proxy returned non-JSON response (Status ${response.status}). Check vercel.json backend configuration.`)
       }
     } catch (err) {
       alert('Error printing: ' + err.message)
@@ -182,9 +222,7 @@ function App() {
               ? 'Detecting available print method for this platform…'
               : win32Available
               ? <>Method: <strong>{printMethodLabel()}</strong>. The "Print All" button will send PDFs directly to your printer with no dialog.</>
-              : printCap?.platform === 'windows'
-              ? 'pywin32 is not installed. Click the button to install it and enable one-click direct printing to your Windows printer.'
-              : 'CUPS (lp) is not found on this server. On Heroku, add heroku-buildpack-apt and an Aptfile containing "cups". On local Linux run: sudo apt install cups'}
+              : 'CUPS (lp) is not found on this server. Your backend container requires the "cups-client" package built into the Dockerfile.'}
           </p>
           {win32Message && (
             <p className={`win32-msg ${win32Message.type === 'error' ? 'win32-msg-error' : 'win32-msg-success'}`}>
@@ -330,7 +368,15 @@ function App() {
           </button>
           <button
             style={{ background: 'transparent', border: '1px solid #ccc', color: '#666', marginTop: '0.5rem' }}
-            onClick={() => { setSuccess(false); setProgressMessages([]) }}
+            onClick={async () => {
+              setSuccess(false);
+              setProgressMessages([]);
+              setFile(null);
+              // Trigger manual server wipe via new endpoint
+              try {
+                await fetch('/api/cleanup', { method: 'POST' });
+              } catch (_) {}
+            }}
           >
             ↩ Start Over
           </button>
