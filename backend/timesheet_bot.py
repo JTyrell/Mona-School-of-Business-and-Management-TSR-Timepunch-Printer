@@ -256,21 +256,35 @@ def _create_timesheet_pdf_sync(biweek, initials, hourly_rate, output_file, run_h
     with sync_playwright() as p:
         browser = None
         browser_name = None
-        for browser_type, channel in [
-            (p.chromium, "chrome"),
-            (p.chromium, "msedge"),
-            (p.chromium, None),
-            (p.firefox, None),
-            (p.webkit, None),
-        ]:
+        
+        # ── Check for remote browser endpoint (Vercel Compatibility) ──────
+        ws_endpoint = os.getenv("PLAYWRIGHT_WS_ENDPOINT")
+        if ws_endpoint:
+            progress(f"  Connecting to remote browser: {ws_endpoint}")
             try:
-                kwargs = {"headless": run_headless, "channel": channel} if channel else {"headless": run_headless}
-                browser = browser_type.launch(**kwargs)
-                browser_name = channel or browser_type.name
-                progress(f"  Browser launched: {browser_name}")
-                break
+                browser = p.chromium.connect_over_cdp(ws_endpoint)
+                browser_name = "remote-chromium"
+                progress(f"  Remote browser connected successfully.")
             except Exception as e:
-                progress(f"  Could not launch {channel or browser_type.name}: {e}")
+                progress(f"  Failed to connect to remote browser: {e}")
+        
+        if not browser:
+            # Fallback to local launch (compatible with dev / non-Vercel)
+            for browser_type, channel in [
+                (p.chromium, "chrome"),
+                (p.chromium, "msedge"),
+                (p.chromium, None),
+                (p.firefox, None),
+                (p.webkit, None),
+            ]:
+                try:
+                    kwargs = {"headless": run_headless, "channel": channel} if channel else {"headless": run_headless}
+                    browser = browser_type.launch(**kwargs)
+                    browser_name = channel or browser_type.name
+                    progress(f"  Local browser launched: {browser_name}")
+                    break
+                except Exception as e:
+                    progress(f"  Could not launch {channel or browser_type.name}: {e}")
 
         if not browser:
             progress("  ERROR: No browser could be launched!")
@@ -433,20 +447,33 @@ async def _create_timesheet_pdf_async(biweek, initials, hourly_rate, output_file
 
     async with async_playwright() as p:
         browser = None
-        for browser_type, channel in [
-            (p.chromium, "chrome"),
-            (p.chromium, "msedge"),
-            (p.chromium, None),
-            (p.firefox, None),
-            (p.webkit, None),
-        ]:
+        
+        # ── Check for remote browser endpoint (Vercel Compatibility) ──────
+        ws_endpoint = os.getenv("PLAYWRIGHT_WS_ENDPOINT")
+        if ws_endpoint:
+            progress(f"  Connecting to remote browser: {ws_endpoint}")
             try:
-                kwargs = {"headless": run_headless, "channel": channel} if channel else {"headless": run_headless}
-                browser = await browser_type.launch(**kwargs)
-                progress(f"  Browser launched: {channel or browser_type.name}")
-                break
+                browser = await p.chromium.connect_over_cdp(ws_endpoint)
+                progress(f"  Remote browser connected successfully.")
             except Exception as e:
-                progress(f"  Could not launch {channel or browser_type.name}: {e}")
+                progress(f"  Failed to connect to remote browser: {e}")
+
+        if not browser:
+            # Fallback to local launch (compatible with dev / non-Vercel)
+            for browser_type, channel in [
+                (p.chromium, "chrome"),
+                (p.chromium, "msedge"),
+                (p.chromium, None),
+                (p.firefox, None),
+                (p.webkit, None),
+            ]:
+                try:
+                    kwargs = {"headless": run_headless, "channel": channel} if channel else {"headless": run_headless}
+                    browser = await browser_type.launch(**kwargs)
+                    progress(f"  Local browser launched: {channel or browser_type.name}")
+                    break
+                except Exception as e:
+                    progress(f"  Could not launch {channel or browser_type.name}: {e}")
 
         if not browser:
             progress("  ERROR: No browser could be launched!")

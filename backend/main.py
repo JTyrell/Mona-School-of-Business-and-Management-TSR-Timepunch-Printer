@@ -13,6 +13,13 @@ import subprocess
 from pathlib import Path
 
 from backend.timesheet_bot import process_timesheets, parse_excel, group_into_biweeks
+from backend.database import init_db, SessionLocal, TimesheetLog, TimesheetProgress
+
+# Initialize database tables on startup
+try:
+    init_db()
+except Exception as e:
+    print(f"Database initialization failed: {e}")
 
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
@@ -106,20 +113,31 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---------------------------------------------------------------------------
-# Shared state for progress reporting (keyed by a simple session token)
-# ---------------------------------------------------------------------------
-_progress_store = {}
-
-
-def _send_progress(session_id, message, step=None, total=None, status="processing"):
-    """Push a progress event into the store for a given session."""
-    entry = {"message": message, "status": status}
-    if step is not None:
-        entry["step"] = step
-    if total is not None:
-        entry["total"] = total
-    _progress_store.setdefault(session_id, []).append(entry)
+def _send_progress(session_id, message, step=None, total=None, status="processing", db=None):
+    """
+    Write a progress event to the database for a given session.
+    If no db session is provided, it creates a temporary one.
+    """
+    close_db = False
+    if db is None:
+        db = SessionLocal()
+        close_db = True
+    
+    try:
+        new_event = TimesheetProgress(
+            session_id=session_id,
+            message=message,
+            step=step,
+            total=total,
+            status=status
+        )
+        db.add(new_event)
+        db.commit()
+    except Exception as e:
+        print(f"Error logging progress to DB: {e}")
+    finally:
+        if close_db:
+            db.close()
 
 
 # ---------------------------------------------------------------------------
@@ -127,20 +145,39 @@ def _send_progress(session_id, message, step=None, total=None, status="processin
 # ---------------------------------------------------------------------------
 @app.get("/api/progress/{session_id}")
 async def progress_stream(session_id: str):
-    """Server-Sent Events stream that pushes progress messages to the client."""
+    """Server-Sent Events stream that fetches progress from the database."""
     async def event_generator():
-        sent = 0
+        last_id = 0
         while True:
-            events = _progress_store.get(session_id, [])
-            while sent < len(events):
-                data = json.dumps(events[sent])
-                yield f"data: {data}\n\n"
-                if events[sent].get("status") in ("done", "error"):
-                    # Clean up after final event
-                    _progress_store.pop(session_id, None)
+            db = SessionLocal()
+            try:
+                # Query only new events since last_id
+                events = db.query(TimesheetProgress).filter(
+                    TimesheetProgress.session_id == session_id,
+                    TimesheetProgress.id > last_id
+                ).order_by(TimesheetProgress.id.asc()).all()
+                
+                should_stop = False
+                for event in events:
+                    data = json.dumps({
+                        "message": event.message,
+                        "step": event.step,
+                        "total": event.total,
+                        "status": event.status
+                    })
+                    yield f"data: {data}\n\n"
+                    last_id = event.id
+                    if event.status in ("done", "error"):
+                        should_stop = True
+                
+                if should_stop:
                     return
-                sent += 1
-            await asyncio.sleep(0.3)
+            except Exception as e:
+                print(f"SSE error: {e}")
+                return
+            finally:
+                db.close()
+            await asyncio.sleep(0.5)
 
     return StreamingResponse(
         event_generator(),
@@ -166,12 +203,23 @@ async def generate_timesheets(
     session_id: str = Form("default"),
     ignore_mismatch: str = Form("false"),
 ):
+    session = SessionLocal()
     try:
         run_headless = headless.lower() == "true"
         ignore_mismatch_bool = ignore_mismatch.lower() == "true"
         rate = float(hourly_rate)
 
-        _send_progress(session_id, "Received upload - saving file...", step=0)
+        # Log the start of the process
+        log_entry = TimesheetLog(
+            status="started",
+            file_name=file.filename,
+            total_pdfs=0
+        )
+        session.add(log_entry)
+        session.commit()
+        session.refresh(log_entry)
+
+        _send_progress(session_id, "Received upload - saving file...", step=0, db=session)
 
         # Save uploaded file into "Excel Timesheets" directory
         import tempfile
@@ -183,7 +231,7 @@ async def generate_timesheets(
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        _send_progress(session_id, f"File saved: {file.filename}")
+        _send_progress(session_id, f"File saved: {file.filename}", db=session)
 
         # PDF Outputs go to a temporary dir
         temp_dir = os.path.abspath(os.path.join(base_tmp, "temp_processing"))
@@ -194,14 +242,19 @@ async def generate_timesheets(
         for f in os.listdir(output_dir):
             os.remove(os.path.join(output_dir, f))
 
-        _send_progress(session_id, "Parsing Excel workbook...")
+        _send_progress(session_id, "Parsing Excel workbook...", db=session)
 
         # Pre-parse to count total biweeks for progress reporting
         from backend.timesheet_bot import parse_excel as _parse, group_into_biweeks as _group, RateMismatchError
         try:
             sheets_map = _parse(file_path, rate, ignore_mismatch=ignore_mismatch_bool)
         except RateMismatchError as e:
-            _send_progress(session_id, "ERROR: Hourly rate mismatch detected.", status="error")
+            # Update log on rate mismatch
+            log_entry.status = "error"
+            log_entry.error_message = f"RateMismatchError: {str(e)}"
+            session.commit()
+
+            _send_progress(session_id, "ERROR: Hourly rate mismatch detected.", status="error", db=session)
             return JSONResponse(
                 status_code=409, 
                 content={"error": str(e), "mismatch": True}
@@ -212,7 +265,12 @@ async def generate_timesheets(
             total_pdfs += len(_group(entries))
 
         if total_pdfs == 0:
-            _send_progress(session_id, "No valid timesheet data found in the file.", status="error")
+            # Update log on no data
+            log_entry.status = "no_data"
+            log_entry.error_message = "No valid timesheet data found in the workbook."
+            session.commit()
+
+            _send_progress(session_id, "No valid timesheet data found in the file.", status="error", db=session)
             return JSONResponse(status_code=400, content={"error": "No valid timesheet data found in the workbook."})
 
         _send_progress(
@@ -220,25 +278,26 @@ async def generate_timesheets(
             f"Found {len(sheets_map)} sheet(s) with {total_pdfs} bi-weekly period(s) to process.",
             step=0,
             total=total_pdfs,
+            db=session
         )
 
         # Run the sync bot in a background thread
-        _send_progress(session_id, "Launching Playwright browser (Sync API, background thread)...")
+        _send_progress(session_id, "Launching Playwright browser (Sync API, background thread)...", db=session)
 
         def _run_bot():
             return process_timesheets(
                 file_path, initials, rate, output_dir, run_headless,
-                progress_callback=lambda msg, step=None, total=None: _send_progress(session_id, msg, step, total),
+                progress_callback=lambda msg, step=None, total=None: _send_progress(session_id, msg, step=step, total=total),
                 ignore_mismatch=ignore_mismatch_bool
             )
 
         pdf_files = await asyncio.to_thread(_run_bot)
 
         if not pdf_files:
-            _send_progress(session_id, "No PDFs were generated. Check server logs.", status="error")
+            _send_progress(session_id, "No PDFs were generated. Check server logs.", status="error", db=session)
             return JSONResponse(status_code=400, content={"error": "No PDFs were generated."})
 
-        _send_progress(session_id, f"All {len(pdf_files)} PDF(s) generated successfully. Creating ZIP archive...")
+        _send_progress(session_id, f"All {len(pdf_files)} PDF(s) generated successfully. Creating ZIP archive...", db=session)
 
         # Zip them up
         zip_path = os.path.join(temp_dir, "timesheets.zip")
@@ -247,14 +306,20 @@ async def generate_timesheets(
                 if os.path.isfile(pdf):
                     zipf.write(pdf, os.path.basename(pdf))
                 else:
-                    _send_progress(session_id, f"WARNING: Expected PDF not found on disk: {os.path.basename(pdf)}")
+                    _send_progress(session_id, f"WARNING: Expected PDF not found on disk: {os.path.basename(pdf)}", db=session)
 
         zip_size = os.path.getsize(zip_path)
         _send_progress(
             session_id,
             f"ZIP archive ready ({zip_size // 1024} KB, {len(pdf_files)} file(s)). Sending download...",
             status="done",
+            db=session
         )
+
+        # Update log on success
+        log_entry.status = "success"
+        log_entry.total_pdfs = len(pdf_files)
+        session.commit()
 
         async def cleanup_files():
             import asyncio
@@ -274,8 +339,16 @@ async def generate_timesheets(
 
     except Exception as e:
         traceback.print_exc()
-        _send_progress(session_id, f"ERROR: {str(e)}", status="error")
+        # Update log on failure
+        if 'log_entry' in locals():
+            log_entry.status = "error"
+            log_entry.error_message = str(e)
+            session.commit()
+
+        _send_progress(session_id, f"ERROR: {str(e)}", status="error", db=session)
         return JSONResponse(status_code=500, content={"error": str(e)})
+    finally:
+        session.close()
 
 
 # ---------------------------------------------------------------------------
