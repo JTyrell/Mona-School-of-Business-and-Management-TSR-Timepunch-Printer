@@ -6,7 +6,9 @@
     "node": ">=18.0.0"
   },
   "scripts": {
-    "postinstall": "cd frontend && npm install && npm run build",
+    "build": "npm run install:frontend && npm run build:frontend",
+    "install:frontend": "cd frontend && npm install",
+    "build:frontend": "cd frontend && npm run build",
     "dev": "concurrently \"npm run dev:frontend\" \"npm run dev:backend\"",
     "dev:frontend": "cd frontend && npm run dev",
     "dev:backend": "python -m uvicorn backend.main:app --reload"
