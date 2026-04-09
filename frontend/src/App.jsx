@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 
+const API_BASE = import.meta.env.VITE_API_URL || '';
+
 function App() {
   const [file, setFile] = useState(null)
   const [initials, setInitials] = useState('JT')
@@ -24,7 +26,7 @@ function App() {
 
   // Check print capability on mount
   useEffect(() => {
-    fetch('/api/win32print-status')
+    fetch(`${API_BASE}/api/win32print-status`)
       .then(r => r.json())
       .then(d => setPrintCap(d))
       .catch(() => setPrintCap({ available: false, platform: 'unknown', method: 'none', printer: null }))
@@ -38,23 +40,23 @@ function App() {
     setWin32Installing(true)
     setWin32Message(null)
     try {
-      const res = await fetch('/api/install-win32print', { method: 'POST' })
-      
+      const res = await fetch(`${API_BASE}/api/install-win32print`, { method: 'POST' })
+
       const contentType = res.headers.get("content-type");
       if (contentType && contentType.includes("application/json")) {
         const data = await res.json()
         if (res.ok && data.success) {
           // Re-fetch full capability
-          const cap = await fetch('/api/win32print-status').then(r => r.json())
+          const cap = await fetch(`${API_BASE}/api/win32print-status`).then(r => r.json())
           setPrintCap(cap)
           setWin32Message({ type: 'success', text: data.message })
         } else {
           setWin32Message({ type: 'error', text: data.error || 'Installation failed.' })
         }
       } else {
-         // This happens when Vercel proxies to a dead/unconfigured backend URL
-         const text = await res.text();
-         throw new Error(`The API proxy returned a non-JSON response (Status ${res.status}). Did you configure your backend URL in vercel.json?`);
+        // This happens when Vercel proxies to a dead/unconfigured backend URL
+        const text = await res.text();
+        throw new Error(`The API proxy returned a non-JSON response (Status ${res.status}). Did you configure your backend URL in vercel.json?`);
       }
     } catch (err) {
       setWin32Message({ type: 'error', text: 'Could not reach server: ' + err.message })
@@ -82,7 +84,7 @@ function App() {
     const sessionId = 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6)
 
     // Start SSE BEFORE the POST
-    const evtSource = new EventSource(`/api/progress/${sessionId}`)
+    const evtSource = new EventSource(`${API_BASE}/api/progress/${sessionId}`)
     evtSource.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data)
@@ -91,7 +93,7 @@ function App() {
         if (data.total !== undefined && data.total !== null) setTotalSteps(data.total)
         setTimeout(scrollToBottom, 50)
         if (data.status === 'done' || data.status === 'error') evtSource.close()
-      } catch (_) {}
+      } catch (_) { }
     }
     evtSource.onerror = () => evtSource.close()
 
@@ -102,33 +104,35 @@ function App() {
     formData.append('headless', headless ? 'true' : 'false')
     formData.append('session_id', sessionId)
     formData.append('ignore_mismatch', forceIgnore ? 'true' : 'false')
+    const isMobileDevice = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    formData.append('is_mobile', isMobileDevice ? 'true' : 'false')
 
     try {
-      const response = await fetch('/api/generate', { method: 'POST', body: formData })
+      const response = await fetch(`${API_BASE}/api/generate`, { method: 'POST', body: formData })
 
       if (!response.ok) {
         let errData
         const contentType = response.headers.get("content-type")
         if (contentType && contentType.includes("application/json")) {
-           errData = await response.json()
+          errData = await response.json()
         } else {
-           throw new Error(`API returned Status ${response.status}. Proxy misconfigured?`)
+          throw new Error(`API returned Status ${response.status}. Proxy misconfigured?`)
         }
 
         if (response.status === 409 && errData.mismatch) {
-           const proceed = window.confirm(
-             "Mismatch Detected: The hourly rate you entered does not geometrically match the totals inside the spreadsheet.\n\n" +
-             "Do you want to continue using your entered rate (" + hourlyRate + ") while prioritizing the exact hours extracted from the spreadsheet?"
-           )
-           if (proceed) {
-              setIgnoreMismatch(true)
-              evtSource.close()
-              return await handleSubmit(null, true)
-           } else {
-              throw new Error("Action cancelled by user due to rate mismatch.")
-           }
+          const proceed = window.confirm(
+            "Mismatch Detected: The hourly rate you entered does not geometrically match the totals inside the spreadsheet.\n\n" +
+            "Do you want to continue using your entered rate (" + hourlyRate + ") while prioritizing the exact hours extracted from the spreadsheet?"
+          )
+          if (proceed) {
+            setIgnoreMismatch(true)
+            evtSource.close()
+            return await handleSubmit(null, true)
+          } else {
+            throw new Error("Action cancelled by user due to rate mismatch.")
+          }
         }
-        
+
         throw new Error(errData.error || 'Failed to generate timesheets')
       }
 
@@ -161,7 +165,7 @@ function App() {
 
   const handlePrint = async () => {
     try {
-      const response = await fetch('/api/print', { method: 'POST' })
+      const response = await fetch(`${API_BASE}/api/print`, { method: 'POST' })
       const contentType = response.headers.get("content-type")
       if (contentType && contentType.includes("application/json")) {
         const data = await response.json()
@@ -201,8 +205,8 @@ function App() {
 
   return (
     <div className="glass-panel">
-      <h1>MSBM Timesheet Printer</h1>
-      <p className="subtitle">Automated bi-weekly calculator and PDF generator</p>
+      <h1>MSBM Punch Clock Printer</h1>
+      <p className="subtitle">Automated bi-weekly punch clock calculator and PDF generator</p>
 
       {/* ── Print capability banner ──────────────────────────────────── */}
       <div className={`win32-banner ${win32Available === null ? 'win32-checking' : win32Available ? 'win32-ok' : 'win32-off'}`}>
@@ -214,15 +218,15 @@ function App() {
             {win32Available === null
               ? 'Checking print support…'
               : win32Available
-              ? `Direct Printing Active — ${platformLabel}`
-              : `Direct Printing Unavailable — ${platformLabel}`}
+                ? `Direct Printing Active — ${platformLabel}`
+                : `Direct Printing Unavailable — ${platformLabel}`}
           </strong>
           <p>
             {win32Available === null
               ? 'Detecting available print method for this platform…'
               : win32Available
-              ? <>Method: <strong>{printMethodLabel()}</strong>. The "Print All" button will send PDFs directly to your printer with no dialog.</>
-              : 'CUPS (lp) is not found on this server. Your backend container requires the "cups-client" package built into the Dockerfile.'}
+                ? <>Method: <strong>{printMethodLabel()}</strong>. The "Print All" button will send PDFs directly to your printer with no dialog.</>
+                : 'CUPS (lp) is not found on this server. Your backend container requires the "cups-client" package built into the Dockerfile.'}
           </p>
           {win32Message && (
             <p className={`win32-msg ${win32Message.type === 'error' ? 'win32-msg-error' : 'win32-msg-success'}`}>
@@ -278,7 +282,7 @@ function App() {
             />
           </div>
 
-          <div className="checkbox-group">
+          <div className="checkbox-group" style={{ marginTop: '1rem' }}>
             <input
               type="checkbox"
               id="headless"
@@ -297,7 +301,7 @@ function App() {
       {loading && (
         <div className="loader-container">
           <div className="spinner"></div>
-          <h3 style={{ color: 'var(--inner-blue)', marginBottom: '0.5rem' }}>Processing Timesheets…</h3>
+          <h3 className="loading-title">Processing Timesheets…</h3>
 
           {totalSteps > 0 && (
             <div className="progress-bar-container">
@@ -312,15 +316,14 @@ function App() {
             {progressMessages.map((msg, idx) => (
               <div
                 key={idx}
-                className={`progress-line ${
-                  msg.includes('ERROR') || msg.includes('FAILED')
-                    ? 'progress-error'
-                    : msg.includes('OK') || msg.includes('saved')
+                className={`progress-line ${msg.includes('ERROR') || msg.includes('FAILED')
+                  ? 'progress-error'
+                  : msg.includes('OK') || msg.includes('saved')
                     ? 'progress-success'
                     : msg.includes('WARNING')
-                    ? 'progress-warn'
-                    : ''
-                }`}
+                      ? 'progress-warn'
+                      : ''
+                  }`}
               >
                 <span className="progress-timestamp">{new Date().toLocaleTimeString()}</span>
                 {msg}
@@ -338,9 +341,9 @@ function App() {
       )}
 
       {success && (
-        <div className="success-container">
-          <h2 style={{ color: 'var(--light-blue)' }}>Success! 🎉</h2>
-          <p>Your timesheets have been generated.</p>
+        <div className="success-container glass-panel">
+          <h2 className="success-title">🎉 Generation Complete!</h2>
+          <p className="success-subtitle">Processed {progressMessages.length} steps successfully.</p>
 
           {progressMessages.length > 0 && (
             <details className="progress-details">
@@ -349,9 +352,8 @@ function App() {
                 {progressMessages.map((msg, idx) => (
                   <div
                     key={idx}
-                    className={`progress-line ${
-                      msg.includes('ERROR') || msg.includes('FAILED') ? 'progress-error' : msg.includes('OK') || msg.includes('saved') ? 'progress-success' : ''
-                    }`}
+                    className={`progress-line ${msg.includes('ERROR') || msg.includes('FAILED') ? 'progress-error' : msg.includes('OK') || msg.includes('saved') ? 'progress-success' : ''
+                      }`}
                   >
                     {msg}
                   </div>
@@ -374,8 +376,8 @@ function App() {
               setFile(null);
               // Trigger manual server wipe via new endpoint
               try {
-                await fetch('/api/cleanup', { method: 'POST' });
-              } catch (_) {}
+                await fetch(`${API_BASE}/api/cleanup`, { method: 'POST' });
+              } catch (_) { }
             }}
           >
             ↩ Start Over

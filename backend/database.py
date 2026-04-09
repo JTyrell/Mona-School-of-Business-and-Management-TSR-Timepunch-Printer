@@ -16,8 +16,11 @@ if not DATABASE_URL:
     # Fallback to local dev if URL is missing (not expected here)
     DATABASE_URL = "sqlite:///./timesheets.db"
 
-engine = create_engine(DATABASE_URL)
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+# Flag to disable DB features gracefully if connection fails
+_db_available = True
 
 Base = declarative_base()
 
@@ -44,7 +47,34 @@ class TimesheetProgress(Base):
 
 # Create tables
 def init_db():
-    Base.metadata.create_all(bind=engine)
+    global _db_available
+    try:
+        # Check connection before creating tables
+        with engine.connect() as conn:
+            pass
+        Base.metadata.create_all(bind=engine)
+        _db_available = True
+        return True
+    except Exception as e:
+        print(f"CRITICAL: Database connection failed (IPv4 issue?). {e}")
+        _db_available = False
+        return False
+
+def is_db_ready():
+    return _db_available
+
+def cleanup_old_data(db, hours=24):
+    """Delete progress and execution logs older than 'hours'."""
+    from datetime import timedelta
+    threshold = datetime.utcnow() - timedelta(hours=hours)
+    try:
+        db.query(TimesheetProgress).filter(TimesheetProgress.created_at < threshold).delete()
+        db.query(TimesheetLog).filter(TimesheetLog.created_at < threshold).delete()
+        db.commit()
+        return True
+    except Exception as e:
+        print(f"Cleanup failed: {e}")
+        return False
 
 def get_db():
     db = SessionLocal()

@@ -1,4 +1,4 @@
-FROM python:3.10-slim
+FROM python:3.11-slim
 
 # Install OS dependencies for Playwright
 RUN apt-get update && apt-get install -y \
@@ -30,20 +30,20 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Copy Requirements
-COPY requirements.txt .
+COPY backend/requirements.txt .
 
-# Install dependencies
+# Install dependencies (no-cache to save container size on Fly)
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Install Playwright browser binaries
-RUN playwright install chromium
+RUN playwright install chromium && playwright install-deps
 
-# Copy application layers
+# Copy application backend content
 COPY backend/ ./backend/
 COPY ["Excel Timesheets", "./Excel Timesheets/"]
 
-# Expose port (Render/Railway handles this via ENV vars, default to 8000)
+# Expose port (Fly.io handles port 8000 via fly.toml typically)
 EXPOSE 8000
 
-# Run Uvicorn Fast API
+# Run Uvicorn Fast API from within the backend directory structure
 CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]

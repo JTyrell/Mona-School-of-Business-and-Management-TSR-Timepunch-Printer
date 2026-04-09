@@ -13,7 +13,7 @@ import subprocess
 from pathlib import Path
 
 from backend.timesheet_bot import process_timesheets, parse_excel, group_into_biweeks
-from backend.database import init_db, SessionLocal, TimesheetLog, TimesheetProgress
+from backend.database import init_db, SessionLocal, TimesheetLog, TimesheetProgress, is_db_ready, cleanup_old_data
 
 # Initialize database tables on startup
 try:
@@ -86,7 +86,7 @@ def _get_print_capability():
             "printer": printer,
         }
     else:
-        # Linux (including Heroku)
+        # Linux (including Cloud/Serverless environments)
         cups_ok = _check_cups()
         printer = None
         if cups_ok:
@@ -108,16 +108,38 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://msbm-timepunchcard.vercel.app", 
+        "http://localhost:5173" # For local development
+    ],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+@app.get("/health")
+async def health_check():
+    return {"status": "ok", "backend": "Fly.io + FastAPI + Playwright"}
+
+# ---------------------------------------------------------------------------
+# Shared state for progress reporting (fallback when DB is offline)
+# ---------------------------------------------------------------------------
+_progress_store = {}
+
 def _send_progress(session_id, message, step=None, total=None, status="processing", db=None):
     """
     Write a progress event to the database for a given session.
-    If no db session is provided, it creates a temporary one.
+    If the database is unreachable, it logs to an in-memory dictionary.
     """
+    if not is_db_ready():
+        print(f"[DB_OFFLINE - fallback to memory] {session_id}: {message}")
+        entry = {"message": message, "status": status}
+        if step is not None:
+            entry["step"] = step
+        if total is not None:
+            entry["total"] = total
+        _progress_store.setdefault(session_id, []).append(entry)
+        return
+    
     close_db = False
     if db is None:
         db = SessionLocal()
@@ -145,8 +167,22 @@ def _send_progress(session_id, message, step=None, total=None, status="processin
 # ---------------------------------------------------------------------------
 @app.get("/api/progress/{session_id}")
 async def progress_stream(session_id: str):
-    """Server-Sent Events stream that fetches progress from the database."""
-    async def event_generator():
+    """Server-Sent Events stream that fetches progress from the database (or memory if offline)."""
+    async def memory_generator():
+        sent = 0
+        while True:
+            events = _progress_store.get(session_id, [])
+            while sent < len(events):
+                data = json.dumps(events[sent])
+                yield f"data: {data}\n\n"
+                if events[sent].get("status") in ("done", "error"):
+                    # Clean up after final event
+                    _progress_store.pop(session_id, None)
+                    return
+                sent += 1
+            await asyncio.sleep(0.3)
+
+    async def db_generator():
         last_id = 0
         while True:
             db = SessionLocal()
@@ -179,8 +215,10 @@ async def progress_stream(session_id: str):
                 db.close()
             await asyncio.sleep(0.5)
 
+    generator = db_generator() if is_db_ready() else memory_generator()
+    
     return StreamingResponse(
-        event_generator(),
+        generator,
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -202,22 +240,30 @@ async def generate_timesheets(
     headless: str = Form("true"),
     session_id: str = Form("default"),
     ignore_mismatch: str = Form("false"),
+    is_mobile: str = Form("false"),
 ):
-    session = SessionLocal()
+    # Trigger an asynchronous cleanup of data older than 24h
+    if is_db_ready():
+        background_tasks.add_task(cleanup_old_data, SessionLocal())
+
+    session = SessionLocal() if is_db_ready() else None
     try:
         run_headless = headless.lower() == "true"
         ignore_mismatch_bool = ignore_mismatch.lower() == "true"
+        is_mobile_bool = is_mobile.lower() == "true"
         rate = float(hourly_rate)
 
         # Log the start of the process
-        log_entry = TimesheetLog(
-            status="started",
-            file_name=file.filename,
-            total_pdfs=0
-        )
-        session.add(log_entry)
-        session.commit()
-        session.refresh(log_entry)
+        log_entry = None
+        if session:
+            log_entry = TimesheetLog(
+                status="started",
+                file_name=file.filename,
+                total_pdfs=0
+            )
+            session.add(log_entry)
+            session.commit()
+            session.refresh(log_entry)
 
         _send_progress(session_id, "Received upload - saving file...", step=0, db=session)
 
@@ -250,9 +296,10 @@ async def generate_timesheets(
             sheets_map = _parse(file_path, rate, ignore_mismatch=ignore_mismatch_bool)
         except RateMismatchError as e:
             # Update log on rate mismatch
-            log_entry.status = "error"
-            log_entry.error_message = f"RateMismatchError: {str(e)}"
-            session.commit()
+            if session and log_entry:
+                log_entry.status = "error"
+                log_entry.error_message = f"RateMismatchError: {str(e)}"
+                session.commit()
 
             _send_progress(session_id, "ERROR: Hourly rate mismatch detected.", status="error", db=session)
             return JSONResponse(
@@ -266,9 +313,10 @@ async def generate_timesheets(
 
         if total_pdfs == 0:
             # Update log on no data
-            log_entry.status = "no_data"
-            log_entry.error_message = "No valid timesheet data found in the workbook."
-            session.commit()
+            if session and log_entry:
+                log_entry.status = "no_data"
+                log_entry.error_message = "No valid timesheet data found in the workbook."
+                session.commit()
 
             _send_progress(session_id, "No valid timesheet data found in the file.", status="error", db=session)
             return JSONResponse(status_code=400, content={"error": "No valid timesheet data found in the workbook."})
@@ -288,10 +336,11 @@ async def generate_timesheets(
             return process_timesheets(
                 file_path, initials, rate, output_dir, run_headless,
                 progress_callback=lambda msg, step=None, total=None: _send_progress(session_id, msg, step=step, total=total),
-                ignore_mismatch=ignore_mismatch_bool
+                ignore_mismatch=ignore_mismatch_bool,
+                is_mobile=is_mobile_bool
             )
 
-        pdf_files = await asyncio.to_thread(_run_bot)
+        pdf_files, tsr_name = await asyncio.to_thread(_run_bot)
 
         if not pdf_files:
             _send_progress(session_id, "No PDFs were generated. Check server logs.", status="error", db=session)
@@ -299,7 +348,9 @@ async def generate_timesheets(
 
         _send_progress(session_id, f"All {len(pdf_files)} PDF(s) generated successfully. Creating ZIP archive...", db=session)
 
-        # Zip them up
+        # Zip them up: [Name] Timecards.zip
+        safe_name = "".join(c for c in tsr_name if c.isalnum() or c in (' ', '_')).strip()
+        zip_filename = f"{safe_name} Timecards.zip"
         zip_path = os.path.join(temp_dir, "timesheets.zip")
         with zipfile.ZipFile(zip_path, "w") as zipf:
             for pdf in pdf_files:
@@ -317,30 +368,44 @@ async def generate_timesheets(
         )
 
         # Update log on success
-        log_entry.status = "success"
-        log_entry.total_pdfs = len(pdf_files)
-        session.commit()
+        if session and log_entry:
+            log_entry.status = "success"
+            log_entry.total_pdfs = len(pdf_files)
+            session.commit()
 
         async def cleanup_files():
             import asyncio
-            await asyncio.sleep(15)  # 15s buffer to ensure Print endpoints and files settle 
+            await asyncio.sleep(15)  # 15s buffer to ensure ZIP download finishes
             try:
                 if os.path.exists(file_path): os.remove(file_path)
-                if os.path.exists(output_dir):
-                    for f in os.listdir(output_dir):
-                        os.remove(os.path.join(output_dir, f))
                 if os.path.exists(zip_path): os.remove(zip_path)
             except Exception:
                 pass
 
-        background_tasks.add_task(cleanup_files)
+        async def cleanup_pdfs_delayed():
+            # Automatically wipe generated PDFs after 30 minutes
+            import asyncio
+            import time
+            await asyncio.sleep(1800)
+            try:
+                now = time.time()
+                if os.path.exists(output_dir):
+                    for f in os.listdir(output_dir):
+                        fpath = os.path.join(output_dir, f)
+                        if os.stat(fpath).st_mtime < now - 1500:
+                            os.remove(fpath)
+            except Exception:
+                pass
 
-        return FileResponse(path=zip_path, filename="timesheets.zip", media_type="application/zip")
+        background_tasks.add_task(cleanup_files)
+        background_tasks.add_task(cleanup_pdfs_delayed)
+
+        return FileResponse(path=zip_path, filename=zip_filename, media_type="application/zip")
 
     except Exception as e:
         traceback.print_exc()
         # Update log on failure
-        if 'log_entry' in locals():
+        if session and log_entry:
             log_entry.status = "error"
             log_entry.error_message = str(e)
             session.commit()
@@ -348,7 +413,8 @@ async def generate_timesheets(
         _send_progress(session_id, f"ERROR: {str(e)}", status="error", db=session)
         return JSONResponse(status_code=500, content={"error": str(e)})
     finally:
-        session.close()
+        if session:
+            session.close()
 
 
 # ---------------------------------------------------------------------------
@@ -522,25 +588,3 @@ async def print_timesheets():
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
-# ---------------------------------------------------------------------------
-# Serve static files from React
-# ---------------------------------------------------------------------------
-frontend_dist = os.path.join(os.getcwd(), "frontend", "dist")
-
-if os.path.isdir(os.path.join(frontend_dist, "assets")):
-    app.mount("/assets", StaticFiles(directory=os.path.join(frontend_dist, "assets")), name="assets")
-
-
-@app.get("/{full_path:path}")
-async def serve_frontend(full_path: str):
-    if os.path.exists(frontend_dist):
-        file_path = os.path.join(frontend_dist, full_path)
-        if full_path and os.path.isfile(file_path):
-            return FileResponse(file_path)
-
-        index_path = os.path.join(frontend_dist, "index.html")
-        if os.path.exists(index_path):
-            with open(index_path, "r", encoding="utf-8") as f:
-                return HTMLResponse(content=f.read())
-
-    return JSONResponse(status_code=404, content={"error": "Frontend not found. Did you run npm run build?"})

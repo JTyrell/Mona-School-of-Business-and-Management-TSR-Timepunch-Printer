@@ -1,6 +1,9 @@
 fastapi
-uvicorn
+uvicorn[standard]
 python-multipart
 pandas
 openpyxl
 playwright
+supabase
+sqlalchemy
+psycopg2-binary

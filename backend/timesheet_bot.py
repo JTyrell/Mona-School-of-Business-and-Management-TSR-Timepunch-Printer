@@ -22,6 +22,7 @@ class RateMismatchError(Exception):
 
 def parse_excel(file_path, hourly_rate=516, ignore_mismatch=False):
     sheets_entries = {}
+    tsr_name = "TSR"
     xl = pd.ExcelFile(file_path)
 
     for sheet_name in xl.sheet_names:
@@ -29,6 +30,11 @@ def parse_excel(file_path, hourly_rate=516, ignore_mismatch=False):
         df = pd.read_excel(xl, sheet_name=sheet_name, header=None)
 
         header_row = -1
+        # Extract TSR Name from A1 if it looks like a name (not just blank)
+        potential_name = str(df.iloc[0, 0]).strip() if not df.empty else ""
+        if potential_name and len(potential_name) > 2 and "DATE" not in potential_name.upper():
+            tsr_name = potential_name
+
         for i, row in df.iterrows():
             if row.astype(str).str.contains("DATE", case=False, na=False).any():
                 header_row = int(i)
@@ -93,7 +99,7 @@ def parse_excel(file_path, hourly_rate=516, ignore_mismatch=False):
             entries.sort(key=lambda x: x['date'])
             sheets_entries[sheet_name] = entries
 
-    return sheets_entries
+    return sheets_entries, tsr_name
 
 
 def group_into_biweeks(entries):
@@ -243,7 +249,7 @@ def _noop_progress(msg, step=None, total=None):
 # SYNC implementation
 # ======================================================================
 
-def _create_timesheet_pdf_sync(biweek, initials, hourly_rate, output_file, run_headless=True, progress=None):
+def _create_timesheet_pdf_sync(biweek, initials, hourly_rate, output_file, run_headless=True, progress=None, is_mobile=False):
     """Generate a single PDF using Playwright Sync API."""
     if progress is None:
         progress = _noop_progress
@@ -256,48 +262,60 @@ def _create_timesheet_pdf_sync(biweek, initials, hourly_rate, output_file, run_h
     with sync_playwright() as p:
         browser = None
         browser_name = None
+
+        if not run_headless:
+            progress("  NOTICE: System forced 'Headed' mode, but Playwright only supports PDF generation in Headless mode.")
+            progress("  Temporarily switching back to Headless to ensure the timesheet saves.")
+            run_headless = True
+
+        import os
+        local_app_data = os.environ.get('LOCALAPPDATA', '')
+        prog_files = os.environ.get('PROGRAMFILES', 'C:\\Program Files')
         
-        # ── Check for remote browser endpoint (Vercel Compatibility) ──────
-        ws_endpoint = os.getenv("PLAYWRIGHT_WS_ENDPOINT")
-        if ws_endpoint:
-            progress(f"  Connecting to remote browser: {ws_endpoint}")
+        fallback_scans = [
+            {"name": "chrome", "channel": "chrome"},
+            {"name": "chromium", "channel": None},
+            {"name": "opera", "executable_path": os.path.join(local_app_data, "Programs", "Opera", "launcher.exe")},
+            {"name": "brave", "executable_path": os.path.join(prog_files, "BraveSoftware", "Brave-Browser", "Application", "brave.exe")},
+            {"name": "msedge", "channel": "msedge"}
+        ]
+        
+        for scan in fallback_scans:
             try:
-                browser = p.chromium.connect_over_cdp(ws_endpoint)
-                browser_name = "remote-chromium"
-                progress(f"  Remote browser connected successfully.")
+                kwargs = {"headless": run_headless}
+                if "channel" in scan and scan["channel"]:
+                    kwargs["channel"] = scan["channel"]
+                elif "executable_path" in scan:
+                    if not os.path.exists(scan["executable_path"]):
+                        continue
+                    kwargs["executable_path"] = scan["executable_path"]
+                    
+                browser = p.chromium.launch(**kwargs)
+                browser_name = scan["name"]
+                progress(f"  Local browser launched: {browser_name}")
+                break
             except Exception as e:
-                progress(f"  Failed to connect to remote browser: {e}")
-        
-        if not browser:
-            # Fallback to local launch (compatible with dev / non-Vercel)
-            for browser_type, channel in [
-                (p.chromium, "chrome"),
-                (p.chromium, "msedge"),
-                (p.chromium, None),
-                (p.firefox, None),
-                (p.webkit, None),
-            ]:
-                try:
-                    kwargs = {"headless": run_headless, "channel": channel} if channel else {"headless": run_headless}
-                    browser = browser_type.launch(**kwargs)
-                    browser_name = channel or browser_type.name
-                    progress(f"  Local browser launched: {browser_name}")
-                    break
-                except Exception as e:
-                    progress(f"  Could not launch {channel or browser_type.name}: {e}")
+                progress(f"  Could not launch {scan['name']}: {e}")
 
         if not browser:
-            progress("  ERROR: No browser could be launched!")
+            progress("  ERROR: No Chromium-compatible browser could be launched locally!")
             return False
 
-        context = browser.new_context(
-            viewport={"width": 1400, "height": 1200},
-            user_agent=(
+        context_kwargs = {
+            "viewport": {"width": 1400, "height": 1200},
+            "user_agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/120.0.0.0 Safari/537.36"
             ),
-        )
+        }
+
+        if is_mobile:
+            device = p.devices['Pixel 5']
+            context_kwargs.update(device)
+            progress("  Emulating mobile device (Pixel 5).")
+
+        context = browser.new_context(**context_kwargs)
         page = context.new_page()
         page.set_default_timeout(60000)
         page.set_default_navigation_timeout(60000)
@@ -435,7 +453,7 @@ def _create_timesheet_pdf_sync(biweek, initials, hourly_rate, output_file, run_h
 # ASYNC implementation
 # ======================================================================
 
-async def _create_timesheet_pdf_async(biweek, initials, hourly_rate, output_file, run_headless=True, progress=None):
+async def _create_timesheet_pdf_async(biweek, initials, hourly_rate, output_file, run_headless=True, progress=None, is_mobile=False):
     """Generate a single PDF using Playwright Async API."""
     if progress is None:
         progress = _noop_progress
@@ -448,45 +466,58 @@ async def _create_timesheet_pdf_async(biweek, initials, hourly_rate, output_file
     async with async_playwright() as p:
         browser = None
         
-        # ── Check for remote browser endpoint (Vercel Compatibility) ──────
-        ws_endpoint = os.getenv("PLAYWRIGHT_WS_ENDPOINT")
-        if ws_endpoint:
-            progress(f"  Connecting to remote browser: {ws_endpoint}")
+        if not run_headless:
+            progress("  NOTICE: System forced 'Headed' mode, but Playwright only supports PDF generation in Headless mode.")
+            progress("  Temporarily switching back to Headless to ensure the timesheet saves.")
+            run_headless = True
+
+        import os
+        local_app_data = os.environ.get('LOCALAPPDATA', '')
+        prog_files = os.environ.get('PROGRAMFILES', 'C:\\Program Files')
+        
+        fallback_scans = [
+            {"name": "chrome", "channel": "chrome"},
+            {"name": "chromium", "channel": None},
+            {"name": "opera", "executable_path": os.path.join(local_app_data, "Programs", "Opera", "launcher.exe")},
+            {"name": "brave", "executable_path": os.path.join(prog_files, "BraveSoftware", "Brave-Browser", "Application", "brave.exe")},
+            {"name": "msedge", "channel": "msedge"}
+        ]
+        
+        for scan in fallback_scans:
             try:
-                browser = await p.chromium.connect_over_cdp(ws_endpoint)
-                progress(f"  Remote browser connected successfully.")
+                kwargs = {"headless": run_headless}
+                if "channel" in scan and scan["channel"]:
+                    kwargs["channel"] = scan["channel"]
+                elif "executable_path" in scan:
+                    if not os.path.exists(scan["executable_path"]):
+                        continue
+                    kwargs["executable_path"] = scan["executable_path"]
+                    
+                browser = await p.chromium.launch(**kwargs)
+                browser_name = scan["name"]
+                progress(f"  Local browser launched: {browser_name}")
+                break
             except Exception as e:
-                progress(f"  Failed to connect to remote browser: {e}")
+                progress(f"  Could not launch {scan['name']}: {e}")
 
         if not browser:
-            # Fallback to local launch (compatible with dev / non-Vercel)
-            for browser_type, channel in [
-                (p.chromium, "chrome"),
-                (p.chromium, "msedge"),
-                (p.chromium, None),
-                (p.firefox, None),
-                (p.webkit, None),
-            ]:
-                try:
-                    kwargs = {"headless": run_headless, "channel": channel} if channel else {"headless": run_headless}
-                    browser = await browser_type.launch(**kwargs)
-                    progress(f"  Local browser launched: {channel or browser_type.name}")
-                    break
-                except Exception as e:
-                    progress(f"  Could not launch {channel or browser_type.name}: {e}")
-
-        if not browser:
-            progress("  ERROR: No browser could be launched!")
+            progress("  ERROR: No Chromium-compatible browser could be launched locally!")
             return False
 
-        context = await browser.new_context(
-            viewport={"width": 1400, "height": 1200},
-            user_agent=(
+        context_kwargs = {
+            "viewport": {"width": 1400, "height": 1200},
+            "user_agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/120.0.0.0 Safari/537.36"
             ),
-        )
+        }
+
+        if is_mobile:
+            device = p.devices['Pixel 5']
+            context_kwargs.update(device)
+
+        context = await browser.new_context(**context_kwargs)
         page = await context.new_page()
         page.set_default_timeout(60000)
         page.set_default_navigation_timeout(60000)
@@ -603,19 +634,29 @@ async def _create_timesheet_pdf_async(biweek, initials, hourly_rate, output_file
 # Public entry points
 # ======================================================================
 
-def process_timesheets(excel_file, initials, hourly_rate, output_dir, run_headless=True, progress_callback=None, ignore_mismatch=False):
+def process_timesheets(
+    file_path,
+    initials,
+    hourly_rate,
+    output_dir,
+    run_headless=True,
+    progress_callback=None,
+    ignore_mismatch=False,
+    is_mobile=False
+):
     """
     Sync entry point (used via asyncio.to_thread from FastAPI, or directly from CLI).
     Accepts an optional progress_callback(msg, step, total) for live reporting.
     """
     cb = progress_callback or _noop_progress
     pdf_files = []
+    tsr_name = "TSR"
 
     cb("Parsing Excel workbook...")
-    sheets_entries_map = parse_excel(excel_file, hourly_rate, ignore_mismatch=ignore_mismatch)
+    sheets_entries_map, tsr_name = parse_excel(file_path, hourly_rate, ignore_mismatch=ignore_mismatch)
     if not sheets_entries_map:
         cb("No valid timesheet data found in the workbook.", status="error")
-        return pdf_files
+        return pdf_files, tsr_name
 
     # Count total PDFs
     all_biweeks = []
@@ -636,10 +677,9 @@ def process_timesheets(excel_file, initials, hourly_rate, output_dir, run_headle
 
         safe_sheet = "".join(c for c in sheet_name if c.isalnum() or c in (' ', '_')).strip()
 
-        # Build filename
+        # Build filename: CalculateHours_[Month]_[Initials]_sheet#
         month_name = week1_start.strftime("%B")
-        # Count how many times we've seen this month for this sheet
-        output_filename = f"CalculateHours_{safe_sheet}_{month_name}_{current_step}.pdf"
+        output_filename = f"CalculateHours_{month_name}_{initials}_sheet{current_step}.pdf"
         output_path = os.path.join(output_dir, output_filename)
 
         cb(
@@ -651,7 +691,7 @@ def process_timesheets(excel_file, initials, hourly_rate, output_dir, run_headle
         )
 
         success = _create_timesheet_pdf_sync(
-            biweek, initials, hourly_rate, output_path, run_headless, progress=cb
+            biweek, initials, hourly_rate, output_path, run_headless, progress=cb, is_mobile=is_mobile
         )
 
         if success:
@@ -661,20 +701,30 @@ def process_timesheets(excel_file, initials, hourly_rate, output_dir, run_headle
             cb(f"  [FAILED] PDF {current_step}/{total} could not be generated.", step=current_step, total=total)
 
     cb(f"Finished: {len(pdf_files)}/{total} PDF(s) generated successfully.", step=total, total=total)
-    return pdf_files
+    return pdf_files, tsr_name
 
 
-async def process_timesheets_async(excel_file, initials, hourly_rate, output_dir, run_headless=True, progress_callback=None, ignore_mismatch=False):
+async def process_timesheets_async(
+    excel_file,
+    initials,
+    hourly_rate,
+    output_dir,
+    run_headless=True,
+    progress_callback=None,
+    ignore_mismatch=False,
+    is_mobile=False
+):
     """
-    Async entry point for use inside FastAPI route handlers.
+    Main entry point for generating all timesheets from the uploaded Excel file.rs.
     """
     cb = progress_callback or _noop_progress
     pdf_files = []
+    tsr_name = "TSR"
 
     cb("Parsing Excel workbook...")
-    sheets_entries_map = parse_excel(excel_file, hourly_rate, ignore_mismatch=ignore_mismatch)
+    sheets_entries_map, tsr_name = parse_excel(excel_file, hourly_rate, ignore_mismatch=ignore_mismatch)
     if not sheets_entries_map:
-        return pdf_files
+        return pdf_files, tsr_name
 
     all_biweeks = []
     for sheet_name, entries in sheets_entries_map.items():
@@ -690,18 +740,18 @@ async def process_timesheets_async(excel_file, initials, hourly_rate, output_dir
         current_step += 1
         week1_start, week2_start, _, _ = biweek
 
-        safe_sheet = "".join(c for c in sheet_name if c.isalnum() or c in (' ', '_')).strip()
+        # Use the same naming logic for async if needed
         month_name = week1_start.strftime("%B")
-        output_filename = f"CalculateHours_{safe_sheet}_{month_name}_{current_step}.pdf"
+        output_filename = f"CalculateHours_{month_name}_{initials}_sheet{current_step}.pdf"
         output_path = os.path.join(output_dir, output_filename)
 
         cb(f"[{current_step}/{total}] Processing sheet '{sheet_name}'...", step=current_step, total=total)
 
         success = await _create_timesheet_pdf_async(
-            biweek, initials, hourly_rate, output_path, run_headless, progress=cb
+            biweek, initials, hourly_rate, output_path, run_headless, progress=cb, is_mobile=is_mobile
         )
         if success:
             pdf_files.append(output_path)
 
     cb(f"Finished: {len(pdf_files)}/{total} PDF(s) generated.", step=total, total=total)
-    return pdf_files
+    return pdf_files, tsr_name
