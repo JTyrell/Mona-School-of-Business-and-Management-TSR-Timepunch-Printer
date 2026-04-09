@@ -22,14 +22,15 @@ body {
   place-items: center;
   min-width: 320px;
   min-height: 100vh;
-  /* Equal balance with soft separation to prevent purple effect without harsh lines */
+  /* Fully mediated gradient with sharpened 5% buffers to maximize brand dominance */
   background: linear-gradient(-45deg, 
     var(--msbm-red) 0%, 
-    var(--msbm-red) 30%, 
-    #f5f7fa 36%, 
-    var(--inner-blue) 42%, 
-    var(--inner-blue) 67%,
-    #8a0e1a 100%
+    var(--msbm-red) 35%, 
+    #f5f7fa 40%, 
+    var(--inner-blue) 45%,
+    var(--inner-blue) 85%,
+    #f5f7fa 90%,
+    var(--msbm-red) 95%
   );
   background-size: 400% 400%;
   animation: gradientBG 10s ease infinite; /* Decoupled timing (10s) */
@@ -339,8 +340,8 @@ button:active {
 }
 
 .win32-ok {
-  background: rgba(85, 239, 196, 0.1);
-  border-color: rgba(85, 239, 196, 0.4);
+  background: hsla(163, 84%, 64%, 0.12);
+  border-color: hsla(163, 84%, 64%, 0.45);
 }
 
 .win32-off {
