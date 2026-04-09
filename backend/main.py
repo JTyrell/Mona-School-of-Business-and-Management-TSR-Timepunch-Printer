@@ -293,7 +293,7 @@ async def generate_timesheets(
         # Pre-parse to count total biweeks for progress reporting
         from backend.timesheet_bot import parse_excel as _parse, group_into_biweeks as _group, RateMismatchError
         try:
-            sheets_map = _parse(file_path, rate, ignore_mismatch=ignore_mismatch_bool)
+            sheets_map, extracted_tsr_name = _parse(file_path, rate, ignore_mismatch=ignore_mismatch_bool)
         except RateMismatchError as e:
             # Update log on rate mismatch
             if session and log_entry:
