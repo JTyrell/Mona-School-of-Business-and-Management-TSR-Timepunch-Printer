@@ -103,7 +103,8 @@ function App() {
     formData.append('hourly_rate', hourlyRate)
     formData.append('headless', headless ? 'true' : 'false')
     formData.append('session_id', sessionId)
-    formData.append('ignore_mismatch', forceIgnore ? 'true' : 'false')
+    const proceedWithIgnore = forceIgnore || ignoreMismatch
+    formData.append('ignore_mismatch', proceedWithIgnore ? 'true' : 'false')
     const isMobileDevice = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
     formData.append('is_mobile', isMobileDevice ? 'true' : 'false')
 
