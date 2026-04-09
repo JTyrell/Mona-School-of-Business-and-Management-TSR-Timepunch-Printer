@@ -15,8 +15,16 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     # Fallback to local dev if URL is missing (not expected here)
     DATABASE_URL = "sqlite:///./timesheets.db"
+elif DATABASE_URL.startswith("postgres://"):
+    # SQLAlchemy 1.4+ requires 'postgresql://' instead of 'postgres://'
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+# SQLite needs connect_args={"check_same_thread": False} if used in multithreaded Fastapi
+engine_kwargs = {"pool_pre_ping": True}
+if DATABASE_URL.startswith("sqlite"):
+    engine_kwargs["connect_args"] = {"check_same_thread": False}
+
+engine = create_engine(DATABASE_URL, **engine_kwargs)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 # Flag to disable DB features gracefully if connection fails

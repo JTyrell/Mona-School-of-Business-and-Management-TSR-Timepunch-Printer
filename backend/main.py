@@ -106,12 +106,18 @@ def _get_print_capability():
 
 app = FastAPI()
 
+# Build allowed origins based on environment variable (e.g., from Vercel)
+# Default to local dev ports if missing. Multiple origins can be comma-separated.
+frontend_urls = os.getenv("FRONTEND_URL", "http://localhost:5173,http://localhost:3000").split(",")
+allowed_origins = [url.strip() for url in frontend_urls if url.strip()]
+# Add the hardcoded vercel app as fallback just in case
+if "https://msbm-timepunchcard.vercel.app" not in allowed_origins:
+    allowed_origins.append("https://msbm-timepunchcard.vercel.app")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://msbm-timepunchcard.vercel.app", 
-        "http://localhost:5173" # For local development
-    ],
+    allow_origins=allowed_origins,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
