@@ -4,7 +4,7 @@ const API_BASE = import.meta.env.VITE_API_URL || '';
 
 function App() {
   const [file, setFile] = useState(null)
-  const [initials, setInitials] = useState('JT')
+  const [initials, setInitials] = useState('')
   const [hourlyRate, setHourlyRate] = useState('516')
   const [headless, setHeadless] = useState(true)
 
