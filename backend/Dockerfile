@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-# Install OS dependencies for Playwright
+# Install OS dependencies for Playwright and CUPS
 RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
@@ -25,11 +25,6 @@ RUN apt-get update && apt-get install -y \
     libpango-1.0-0 \
     libcairo2 \
     libasound2 \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install system dependencies for Playwright, CUPS, and clean up
-RUN apt-get update && apt-get install -y \
-    cups-client \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
