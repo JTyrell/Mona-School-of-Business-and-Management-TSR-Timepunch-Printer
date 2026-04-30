@@ -58,7 +58,6 @@ RUN playwright install chromium && playwright install-deps
 
 # Copy application backend content
 COPY backend/ ./backend/
-COPY ["Excel Timesheets", "./Excel Timesheets/"]
 
 # Copy compiled frontend from Stage 1
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
