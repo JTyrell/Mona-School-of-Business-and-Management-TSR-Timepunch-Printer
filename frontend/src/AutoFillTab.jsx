@@ -1,7 +1,9 @@
 import { useState } from 'react'
 
-export default function AutoFillTab({ apiBase }) {
+export default function AutoFillTab({ apiBase, onUseFileForPdf }) {
   const [file, setFile] = useState(null)
+  const [successBlob, setSuccessBlob] = useState(null)
+  const [successFilename, setSuccessFilename] = useState(null)
   
   const currentYear = new Date().getFullYear()
   const currentMonth = new Date().getMonth() + 1
@@ -60,6 +62,7 @@ export default function AutoFillTab({ apiBase }) {
 
     setError(null)
     setLoading(true)
+    setSuccessBlob(null)
 
     const formData = new FormData()
     formData.append('file', file)
@@ -93,14 +96,8 @@ export default function AutoFillTab({ apiBase }) {
       const blob = await response.blob()
       if (blob.size < 100) throw new Error('Returned file appears empty. Check server logs.')
       
-      const url = window.URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `Filled_${file.name}`
-      document.body.appendChild(a)
-      a.click()
-      a.remove()
-      window.URL.revokeObjectURL(url)
+      setSuccessBlob(blob)
+      setSuccessFilename(`Filled_${file.name}`)
       
     } catch (err) {
       setError(err.message)
@@ -228,6 +225,44 @@ export default function AutoFillTab({ apiBase }) {
           {loading ? 'Processing...' : 'Auto-Fill Document'}
         </button>
       </form>
+
+      {successBlob && (
+        <div className="success-container glass-panel" style={{ marginTop: '2rem' }}>
+          <h2 className="success-title">✅ Auto-Fill Complete!</h2>
+          <p>Your timesheet has been successfully populated with the configured schedules.</p>
+          
+          <div style={{ display: 'flex', gap: '1rem', marginTop: '1rem', flexWrap: 'wrap' }}>
+            <button 
+              onClick={() => {
+                const url = window.URL.createObjectURL(successBlob)
+                const a = document.createElement('a')
+                a.href = url
+                a.download = successFilename
+                document.body.appendChild(a)
+                a.click()
+                a.remove()
+                window.URL.revokeObjectURL(url)
+              }}
+            >
+              ⬇ Download Auto-Filled Timesheet
+            </button>
+            <button 
+              className="btn-secondary"
+              onClick={() => {
+                if (onUseFileForPdf) {
+                  onUseFileForPdf(successBlob, successFilename)
+                }
+              }}
+            >
+              📄 Push to PDF Generator
+            </button>
+          </div>
+          
+          <div className="warning-banner" style={{ marginTop: '1rem', fontSize: '0.9rem', color: '#856404', backgroundColor: '#fff3cd', padding: '1rem', borderRadius: '8px', border: '1px solid #ffeeba', lineHeight: '1.5' }}>
+            <strong>⚠️ Warning about Formulas:</strong> Because your template uses Excel formulas for HOURS and LINE TOTAL, those formulas have <strong>not</strong> been evaluated yet. If you push the file directly to the PDF Generator, the generator may see those columns as empty and skip the rows. <strong>For best results</strong>, download the file, open it in Microsoft Excel, click Save to allow Excel to calculate the formulas, and then upload it to the Generator manually.
+          </div>
+        </div>
+      )}
     </div>
   )
 }

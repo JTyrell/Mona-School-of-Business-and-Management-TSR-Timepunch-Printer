@@ -298,21 +298,8 @@ async def generate_timesheets(
         _send_progress(session_id, "Parsing Excel workbook...", db=session)
 
         # Pre-parse to count total biweeks for progress reporting
-        from backend.timesheet_bot import parse_excel as _parse, group_into_biweeks as _group, RateMismatchError
-        try:
-            sheets_map, extracted_tsr_name = _parse(file_path, rate, ignore_mismatch=ignore_mismatch_bool)
-        except RateMismatchError as e:
-            # Update log on rate mismatch
-            if session and log_entry:
-                log_entry.status = "error"
-                log_entry.error_message = f"RateMismatchError: {str(e)}"
-                session.commit()
-
-            _send_progress(session_id, "ERROR: Hourly rate mismatch detected.", status="error", db=session)
-            return JSONResponse(
-                status_code=409, 
-                content={"error": str(e), "mismatch": True}
-            )
+        from backend.timesheet_bot import parse_excel as _parse, group_into_biweeks as _group
+        sheets_map, extracted_tsr_name = _parse(file_path, rate, ignore_mismatch=ignore_mismatch_bool)
 
         total_pdfs = 0
         for entries in sheets_map.values():

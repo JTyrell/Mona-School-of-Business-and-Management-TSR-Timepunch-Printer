@@ -79,14 +79,15 @@ def process_autofill(
             active_day_conf = active_schedule.get(str(weekday))
             if active_day_conf and active_day_conf.get("enabled"):
                 # We need to fill this row
-                # Format date as DD/MM/YYYY
-                date_str = current_date.strftime("%d/%m/%Y")
+                # Format date properly
+                # Write proper datetime to retain Excel formatting
+                date_obj = datetime.combine(current_date, datetime.min.time())
                 desc_str = active_schedule.get("description", "Helpdesk")
                 start_str = active_day_conf.get("start", "")
                 end_str = active_day_conf.get("end", "")
                 
-                # Write to cells
-                for col_name, val in [("date", date_str), ("description", desc_str), ("start", start_str), ("end", end_str)]:
+                # Write to cells (Intentionally omitting HOURS and LINE TOTAL to preserve formulas)
+                for col_name, val in [("date", date_obj), ("description", desc_str), ("start", start_str), ("end", end_str)]:
                     if col_name in col_map:
                         try:
                             sheet.cell(row=current_row, column=col_map[col_name]).value = val

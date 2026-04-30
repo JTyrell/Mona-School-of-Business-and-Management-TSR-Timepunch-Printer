@@ -17,9 +17,6 @@ def format_time_12h(t):
 def get_week_monday(date):
     return date - timedelta(days=date.weekday())
 
-class RateMismatchError(Exception):
-    pass
-
 def parse_excel(file_path, hourly_rate=516, ignore_mismatch=False):
     sheets_entries = {}
     tsr_name = "TSR"
@@ -46,6 +43,8 @@ def parse_excel(file_path, hourly_rate=516, ignore_mismatch=False):
         date_col = None
         total_col = None
         hours_col = None
+        start_col = None
+        end_col = None
         for idx, val in enumerate(header):
             val_str = str(val).upper()
             if 'DATE' in val_str:
@@ -54,46 +53,103 @@ def parse_excel(file_path, hourly_rate=516, ignore_mismatch=False):
                 total_col = idx
             if 'HOUR' in val_str:
                 hours_col = idx
+            if 'START' in val_str:
+                start_col = idx
+            if 'END' in val_str:
+                end_col = idx
 
         if date_col is None or total_col is None:
             continue
 
+        # Collect valid rows first to smartly determine date format (US vs UK)
+        raw_rows = []
         for i in range(header_row + 1, len(df)):
             row = df.iloc[i]
             date_val = row[date_col]
-            total_val = row[total_col]
-
-            try:
-                date = pd.to_datetime(date_val)
-            except Exception:
-                continue
-
             if 'TOTAL' in str(date_val).upper():
                 continue
-
+            total_val = row[total_col]
+            
+            hours = 0
             try:
                 if hours_col is not None:
-                    hours = float(row[hours_col])
-                    if hours > 0 and total_val and str(total_val).strip():
-                        sheet_total = float(total_val)
-                        if not ignore_mismatch:
-                            implied_total = hours * hourly_rate
-                            if abs(implied_total - sheet_total) > 0.05:
-                                raise RateMismatchError("Calculated total does not match sheet total.")
+                    # pandas might read formulas as NaN or strings
+                    val = row[hours_col]
+                    if pd.isna(val) or (isinstance(val, str) and val.startswith('=')):
+                        raise ValueError("Unevaluated formula or NaN")
+                    hours = float(val)
                 else:
-                    hours = float(total_val) / hourly_rate
-                hours = round(hours, 2)
-            except RateMismatchError:
-                raise
+                    val = row[total_col]
+                    if pd.isna(val) or (isinstance(val, str) and val.startswith('=')):
+                        raise ValueError("Unevaluated formula or NaN")
+                    hours = float(val) / hourly_rate
             except Exception:
-                continue
+                # Fallback: if hours couldn't be extracted (e.g. pushed from Autofill where formulas aren't evaluated)
+                if start_col is not None and end_col is not None:
+                    from dateutil.parser import parse as dt_parse
+                    import datetime as dt
+                    start_val = row[start_col]
+                    end_val = row[end_col]
+                    if pd.notna(start_val) and pd.notna(end_val):
+                        try:
+                            # if they are already time objects
+                            if isinstance(start_val, dt.time):
+                                s_time = start_val
+                            else:
+                                s_time = dt_parse(str(start_val)).time()
+                                
+                            if isinstance(end_val, dt.time):
+                                e_time = end_val
+                            else:
+                                e_time = dt_parse(str(end_val)).time()
+                                
+                            s_dt = dt.datetime.combine(dt.date.today(), s_time)
+                            e_dt = dt.datetime.combine(dt.date.today(), e_time)
+                            if e_dt < s_dt:
+                                e_dt += dt.timedelta(days=1)
+                            hours = (e_dt - s_dt).total_seconds() / 3600
+                        except Exception:
+                            pass
 
+            hours = round(hours, 2)
+                
             if hours > 0:
+                raw_rows.append({'row': row, 'date_val': date_val, 'hours': hours})
+
+        if not raw_rows:
+            continue
+
+        # Smart format detection: test both True and False for dayfirst
+        parsed_true = []
+        parsed_false = []
+        for r in raw_rows:
+            try:
+                parsed_true.append(pd.to_datetime(r['date_val'], dayfirst=True).date())
+            except Exception:
+                pass
+            try:
+                parsed_false.append(pd.to_datetime(r['date_val'], dayfirst=False).date())
+            except Exception:
+                pass
+                
+        span_true = (max(parsed_true) - min(parsed_true)).days if parsed_true else 9999
+        span_false = (max(parsed_false) - min(parsed_false)).days if parsed_false else 9999
+        
+        # Timesheets are typically tight, contiguous blocks (e.g. 1-4 weeks).
+        # A wrong format interpretation usually scatters days across multiple months (huge span).
+        # We pick the format that produces the tightest date span. Ties go to the UK default (True).
+        use_dayfirst = span_true <= span_false
+
+        for r in raw_rows:
+            try:
+                date = pd.to_datetime(r['date_val'], dayfirst=use_dayfirst)
                 entries.append({
                     'date': date.date(),
-                    'hours': hours,
+                    'hours': r['hours'],
                     'weekday': date.weekday()
                 })
+            except Exception:
+                continue
 
         if entries:
             entries.sort(key=lambda x: x['date'])
@@ -108,10 +164,11 @@ def group_into_biweeks(entries):
 
     min_date = min(e['date'] for e in entries)
     max_date = max(e['date'] for e in entries)
-    monday_start = get_week_monday(min_date)
+    
+    # Use the exact first date from the excel file, do not force shift to Monday
+    current_start = min_date
 
     periods = []
-    current_start = monday_start
     while current_start <= max_date:
         period_end = current_start + timedelta(days=13)
         periods.append((current_start, period_end))

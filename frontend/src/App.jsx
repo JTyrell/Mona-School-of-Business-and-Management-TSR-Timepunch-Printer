@@ -20,6 +20,23 @@ function App() {
   const [currentStep, setCurrentStep] = useState(0)
   const [totalSteps, setTotalSteps] = useState(0)
   const progressEndRef = useRef(null)
+  const fileInputRef = useRef(null)
+
+  // Programmatically update the file input DOM element if 'file' state changes
+  // This ensures "No file chosen" updates when pushing a file from AutoFill tab
+  useEffect(() => {
+    if (fileInputRef.current && file) {
+      try {
+        const dataTransfer = new DataTransfer()
+        dataTransfer.items.add(file)
+        fileInputRef.current.files = dataTransfer.files
+      } catch (e) {
+        console.warn("Could not programmatically set file input:", e)
+      }
+    } else if (fileInputRef.current && !file) {
+      fileInputRef.current.value = ""
+    }
+  }, [file, activeTab])
 
   // win32print / CUPS state
   const [printCap, setPrintCap] = useState(null)   // null = unknown
@@ -76,6 +93,12 @@ function App() {
       return
     }
 
+    // Warn if user changed the default rate
+    if (!forceIgnore && hourlyRate !== '516') {
+      const proceed = window.confirm(`You have changed the hourly rate to $${hourlyRate} (Default is $516).\n\nAre you sure you want to proceed with this new rate?`)
+      if (!proceed) return
+    }
+
     setError(null)
     setLoading(true)
     setSuccess(false)
@@ -113,31 +136,17 @@ function App() {
     try {
       const response = await fetch(`${API_BASE}/api/generate`, { method: 'POST', body: formData })
 
-      if (!response.ok) {
-        let errData
-        const contentType = response.headers.get("content-type")
-        if (contentType && contentType.includes("application/json")) {
-          errData = await response.json()
-        } else {
-          throw new Error(`API returned Status ${response.status}. Proxy misconfigured?`)
-        }
-
-        if (response.status === 409 && errData.mismatch) {
-          const proceed = window.confirm(
-            "Mismatch Detected: The hourly rate you entered does not geometrically match the totals inside the spreadsheet.\n\n" +
-            "Do you want to continue using your entered rate (" + hourlyRate + ") while prioritizing the exact hours extracted from the spreadsheet?"
-          )
-          if (proceed) {
-            setIgnoreMismatch(true)
-            evtSource.close()
-            return await handleSubmit(null, true)
+        if (!response.ok) {
+          let errData
+          const contentType = response.headers.get("content-type")
+          if (contentType && contentType.includes("application/json")) {
+            errData = await response.json()
           } else {
-            throw new Error("Action cancelled by user due to rate mismatch.")
+            throw new Error(`API returned Status ${response.status}. Proxy misconfigured?`)
           }
-        }
 
-        throw new Error(errData.error || 'Failed to generate timesheets')
-      }
+          throw new Error(errData.error || 'Failed to generate timesheets')
+        }
 
       const blob = await response.blob()
       if (blob.size < 100) throw new Error('ZIP appears empty. Check server logs.')
@@ -268,7 +277,14 @@ function App() {
       </div>
 
       {activeTab === 'autofill' ? (
-        <AutoFillTab apiBase={API_BASE} />
+        <AutoFillTab 
+          apiBase={API_BASE} 
+          onUseFileForPdf={(blob, filename) => {
+            const newFile = new File([blob], filename || "Autofilled_Timesheet.xlsx", { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+            setFile(newFile)
+            setActiveTab('generator')
+          }}
+        />
       ) : (
         <>
           {!loading && !success && (
@@ -278,6 +294,7 @@ function App() {
             <input
               type="file"
               accept=".xlsx, .xls"
+              ref={fileInputRef}
               onChange={(e) => setFile(e.target.files[0])}
               required
             />
