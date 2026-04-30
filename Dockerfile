@@ -65,5 +65,5 @@ COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
 # Expose port
 EXPOSE 8000
 
-# Run Uvicorn Fast API
-CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run Uvicorn Fast API using sh -c to evaluate the $PORT env var injected by Railway
+CMD sh -c "uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000}"
