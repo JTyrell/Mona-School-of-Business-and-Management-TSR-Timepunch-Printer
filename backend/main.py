@@ -648,3 +648,24 @@ async def print_timesheets():
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+# ---------------------------------------------------------------------------
+# Serve React Frontend (For Unified Railway Deployment)
+# ---------------------------------------------------------------------------
+frontend_dist = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend", "dist")
+
+if os.path.isdir(frontend_dist):
+    assets_dir = os.path.join(frontend_dist, "assets")
+    if os.path.isdir(assets_dir):
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+    
+    @app.get("/{full_path:path}")
+    async def serve_frontend(full_path: str):
+        # Serve the requested file if it exists (e.g. favicon.ico, etc)
+        file_path = os.path.join(frontend_dist, full_path)
+        if full_path and os.path.isfile(file_path):
+            return FileResponse(file_path)
+        # Otherwise fallback to index.html for React Router
+        index_path = os.path.join(frontend_dist, "index.html")
+        if os.path.isfile(index_path):
+            return FileResponse(index_path)
+        return JSONResponse(status_code=404, content={"error": "Frontend not found."})

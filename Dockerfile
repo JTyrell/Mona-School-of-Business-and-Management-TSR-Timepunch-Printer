@@ -1,3 +1,21 @@
+# ==========================================
+# STAGE 1: Build the React Frontend
+# ==========================================
+FROM node:22-slim AS frontend-builder
+WORKDIR /app/frontend
+
+# Copy package files and install dependencies
+COPY frontend/package.json frontend/package-lock.json* ./
+RUN npm install
+
+# Copy source and build
+COPY frontend/ ./
+RUN npm run build
+
+
+# ==========================================
+# STAGE 2: Build the Python Backend
+# ==========================================
 FROM python:3.11-slim
 
 # Install OS dependencies for Playwright
@@ -32,7 +50,7 @@ WORKDIR /app
 # Copy Requirements
 COPY backend/requirements.txt .
 
-# Install dependencies (no-cache to save container size on Fly)
+# Install dependencies (no-cache to save container size)
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Install Playwright browser binaries
@@ -42,8 +60,11 @@ RUN playwright install chromium && playwright install-deps
 COPY backend/ ./backend/
 COPY ["Excel Timesheets", "./Excel Timesheets/"]
 
-# Expose port (Fly.io handles port 8000 via fly.toml typically)
+# Copy compiled frontend from Stage 1
+COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
+
+# Expose port
 EXPOSE 8000
 
-# Run Uvicorn Fast API from within the backend directory structure
+# Run Uvicorn Fast API
 CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]

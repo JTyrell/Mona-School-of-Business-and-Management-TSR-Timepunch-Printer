@@ -1,0 +1,21 @@
+.env
+.env.*
+*.secret
+
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+env/
+.venv/
+
+node_modules/
+
+.git/
+.github/
+.vscode/
+.idea/
+
+Excel Timesheets/
+temp_processing/
+*.zip
