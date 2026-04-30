@@ -412,3 +412,195 @@ button:active {
   cursor: not-allowed;
 }
 
+/* ---- Tabs ---- */
+.tabs {
+  display: flex;
+  margin-bottom: 2rem;
+  border-bottom: 2px solid rgba(35, 65, 164, 0.2);
+}
+.tab {
+  flex: 1;
+  padding: 1rem;
+  background: transparent;
+  border: none;
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--inner-blue);
+  cursor: pointer;
+  margin-top: 0;
+  box-shadow: none;
+  border-radius: 12px 12px 0 0;
+  transition: all 0.3s ease;
+  position: relative;
+}
+.tab:hover {
+  background: rgba(35, 65, 164, 0.05);
+  box-shadow: none;
+  transform: none;
+}
+.tab.active {
+  color: var(--msbm-red);
+  background: rgba(209, 18, 38, 0.05);
+}
+.tab.active::after {
+  content: '';
+  position: absolute;
+  bottom: -2px;
+  left: 0;
+  width: 100%;
+  height: 2px;
+  background: var(--msbm-red);
+}
+
+/* ---- AutoFill Form specific ---- */
+.form-row {
+  display: flex;
+  gap: 1rem;
+}
+.form-group.half {
+  flex: 1;
+}
+.card-section {
+  background: rgba(255, 255, 255, 0.5);
+  border: 1px solid rgba(35, 65, 164, 0.1);
+  border-radius: 12px;
+  padding: 1.5rem;
+  text-align: left;
+}
+.card-section h3 {
+  margin-top: 0;
+  color: var(--msbm-red);
+  margin-bottom: 1rem;
+}
+.days-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+.day-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: white;
+  padding: 0.5rem 0.75rem;
+  border-radius: 20px;
+  border: 1px solid #ddd;
+  cursor: pointer;
+  font-size: 0.9rem;
+  transition: all 0.2s ease;
+}
+.day-checkbox:hover {
+  border-color: var(--light-blue);
+}
+.day-checkbox input {
+  margin: 0;
+  accent-color: var(--inner-blue);
+}
+.mid-month-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+.mid-month-header h3 {
+  margin-bottom: 0;
+}
+
+/* Switch */
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 50px;
+  height: 24px;
+}
+.switch input { 
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: #ccc;
+  transition: .4s;
+}
+.slider:before {
+  position: absolute;
+  content: "";
+  height: 16px;
+  width: 16px;
+  left: 4px;
+  bottom: 4px;
+  background-color: white;
+  transition: .4s;
+}
+input:checked + .slider {
+  background-color: var(--msbm-red);
+}
+input:focus + .slider {
+  box-shadow: 0 0 1px var(--msbm-red);
+}
+input:checked + .slider:before {
+  transform: translateX(26px);
+}
+.slider.round {
+  border-radius: 24px;
+}
+.slider.round:before {
+  border-radius: 50%;
+}
+
+/* ---- Per-Day Config ---- */
+.section-desc {
+  font-size: 0.85rem;
+  color: #666;
+  margin-top: -0.5rem;
+  margin-bottom: 1rem;
+}
+.day-config-container {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.day-config-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: white;
+  padding: 0.5rem 1rem;
+  border-radius: 8px;
+  border: 1px solid #ddd;
+}
+.day-label-text {
+  min-width: 90px;
+  font-weight: 500;
+  color: var(--text-main);
+}
+.day-time-inputs {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  opacity: 0.4;
+  pointer-events: none;
+  transition: all 0.2s ease;
+}
+.day-time-inputs.active {
+  opacity: 1;
+  pointer-events: auto;
+}
+.day-time-inputs input {
+  width: 100px;
+  padding: 0.4rem;
+  font-size: 0.85rem;
+  text-align: center;
+}
+.time-separator {
+  font-size: 0.85rem;
+  color: #888;
+}
+

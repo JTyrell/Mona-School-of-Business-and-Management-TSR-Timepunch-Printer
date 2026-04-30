@@ -8,8 +8,9 @@ primary_region = "dfw"
   PORT = "8000"
   # You will override this in Fly.io secrets if using Supabase PostgreSQL
   # If left blank, it will safely fallback to local SQLite volume
-  fly secrets set DATABASE_URL="postgresql://postgres.xuxzhyjsxwteapuuellv:[EMAIL_ADDRESS]:5432/postgres"
-  # DATABASE_URL = "sqlite:////app/data/timesheets.db"
+  DATABASE_URL = "sqlite:////app/data/timesheets.db"
+  fly secrets set DATABASE_URL="postgresql://postgres.xuxzhyjsxwteapuuellv:jevountyrell@gmail.com:5432/postgres"
+
 
 [vm]
 cpu_kind = "shared"

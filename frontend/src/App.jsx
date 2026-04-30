@@ -1,8 +1,10 @@
 import { useState, useRef, useEffect } from 'react'
+import AutoFillTab from './AutoFillTab'
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
 function App() {
+  const [activeTab, setActiveTab] = useState('generator') // 'generator' or 'autofill'
   const [file, setFile] = useState(null)
   const [initials, setInitials] = useState('')
   const [hourlyRate, setHourlyRate] = useState('516')
@@ -250,8 +252,27 @@ function App() {
 
       {error && <div className="error-banner">{error}</div>}
 
-      {!loading && !success && (
-        <form onSubmit={handleSubmit}>
+      <div className="tabs">
+        <button 
+          className={`tab ${activeTab === 'generator' ? 'active' : ''}`}
+          onClick={() => setActiveTab('generator')}
+        >
+          Generate PDFs
+        </button>
+        <button 
+          className={`tab ${activeTab === 'autofill' ? 'active' : ''}`}
+          onClick={() => setActiveTab('autofill')}
+        >
+          Auto-Fill Excel
+        </button>
+      </div>
+
+      {activeTab === 'autofill' ? (
+        <AutoFillTab apiBase={API_BASE} />
+      ) : (
+        <>
+          {!loading && !success && (
+            <form onSubmit={handleSubmit}>
           <div className="form-group">
             <label>Excel Timesheet File</label>
             <input
@@ -384,6 +405,8 @@ function App() {
             ↩ Start Over
           </button>
         </div>
+      )}
+      </>
       )}
     </div>
   )

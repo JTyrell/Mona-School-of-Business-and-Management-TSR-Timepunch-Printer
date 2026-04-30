@@ -14,6 +14,7 @@ from pathlib import Path
 
 from backend.timesheet_bot import process_timesheets, parse_excel, group_into_biweeks
 from backend.database import init_db, SessionLocal, TimesheetLog, TimesheetProgress, is_db_ready, cleanup_old_data
+from backend.autofill import process_autofill
 
 # Initialize database tables on startup
 try:
@@ -446,6 +447,72 @@ async def force_cleanup():
         pass
     
     return JSONResponse(content={"success": True})
+
+
+# ---------------------------------------------------------------------------
+# Autofill endpoint
+# ---------------------------------------------------------------------------
+@app.post("/api/autofill")
+async def generate_autofill(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    year: str = Form(...),
+    month: str = Form(...),
+    sheets: str = Form(...),
+    standard_schedule: str = Form(...),
+    mid_month_schedule: str = Form(...)
+):
+    import tempfile
+    try:
+        base_tmp = tempfile.gettempdir()
+        timesheets_dir = os.path.abspath(os.path.join(base_tmp, "Excel Timesheets"))
+        os.makedirs(timesheets_dir, exist_ok=True)
+
+        file_path = os.path.join(timesheets_dir, f"autofill_input_{file.filename}")
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        output_path = os.path.join(timesheets_dir, f"Filled_{file.filename}")
+
+        # Parse JSON schedules
+        standard_sched_data = json.loads(standard_schedule)
+        mid_month_sched_data = json.loads(mid_month_schedule)
+        sheets_list = [s.strip() for s in sheets.split(",") if s.strip()]
+        year_int = int(year)
+        month_int = int(month)
+
+        def _run_autofill():
+            return process_autofill(
+                file_path=file_path,
+                output_path=output_path,
+                year=year_int,
+                month=month_int,
+                sheets_to_fill=sheets_list,
+                standard_schedule=standard_sched_data,
+                mid_month_schedule=mid_month_sched_data
+            )
+
+        success = await asyncio.to_thread(_run_autofill)
+
+        if not success or not os.path.exists(output_path):
+            return JSONResponse(status_code=500, content={"error": "Failed to autofill the document."})
+
+        async def cleanup_files():
+            import asyncio
+            await asyncio.sleep(15)
+            try:
+                if os.path.exists(file_path): os.remove(file_path)
+                if os.path.exists(output_path): os.remove(output_path)
+            except Exception:
+                pass
+
+        background_tasks.add_task(cleanup_files)
+
+        return FileResponse(path=output_path, filename=f"Filled_{file.filename}", media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+    except Exception as e:
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 # ---------------------------------------------------------------------------
