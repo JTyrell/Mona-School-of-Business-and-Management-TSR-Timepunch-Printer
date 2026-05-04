@@ -21,6 +21,8 @@ build/
 .vscode/
 .idea/
 .DS_Store
+.agents
+.qodo
 
 # Temporary outputs
 Excel Timesheets/
