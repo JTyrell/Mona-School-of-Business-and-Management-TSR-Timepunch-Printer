@@ -12,6 +12,7 @@ venv/
 env/
 .venv/
 
+
 # Node
 node_modules/
 dist/
@@ -23,6 +24,7 @@ build/
 .DS_Store
 .agents
 .qodo
+check_deps.py
 
 # Temporary outputs
 Excel Timesheets/
