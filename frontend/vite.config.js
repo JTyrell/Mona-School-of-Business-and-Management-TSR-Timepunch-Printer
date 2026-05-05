@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react'
 
 // https://vite.dev/config/
 export default defineConfig({
+  base: '/Mona-School-of-Business-and-Management-TSR-Timepunch-Printer/',
   plugins: [react()],
   server: {
     proxy: {

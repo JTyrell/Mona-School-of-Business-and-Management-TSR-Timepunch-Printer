@@ -321,18 +321,6 @@ function App() {
             />
           </div>
 
-          <div className="checkbox-group" style={{ marginTop: '1rem' }}>
-            <input
-              type="checkbox"
-              id="headless"
-              checked={headless}
-              onChange={(e) => setHeadless(e.target.checked)}
-            />
-            <label htmlFor="headless" style={{ marginBottom: 0 }}>
-              Run Hidden (Headless Mode)
-            </label>
-          </div>
-
           <button type="submit" id="btn-generate">Generate Timesheets</button>
         </form>
       )}
@@ -371,11 +359,6 @@ function App() {
             <div ref={progressEndRef} />
           </div>
 
-          {!headless && (
-            <p style={{ fontSize: '0.9em', color: 'var(--msbm-red)', marginTop: '1rem' }}>
-              A browser window should appear showing the bot's progress.
-            </p>
-          )}
         </div>
       )}
 
