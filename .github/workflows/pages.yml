@@ -38,7 +38,7 @@ jobs:
               working-directory: frontend
               run: |
                   npm ci
-                  VITE_API_URL=${{ secrets.VITE_API_URL }} npm run build
+                  VITE_API_URL=${{ secrets.VITE_API_URL }} VITE_BASE_PATH=/Mona-School-of-Business-and-Management-TSR-Timepunch-Printer/ npm run build
                   touch dist/.nojekyll
 
             - name: Upload artifact
