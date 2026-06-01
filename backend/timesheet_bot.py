@@ -66,6 +66,9 @@ def parse_excel(file_path, hourly_rate=516, ignore_mismatch=False):
         for i in range(header_row + 1, len(df)):
             row = df.iloc[i]
             date_val = row[date_col]
+            # Skip rows with empty/NaN dates or TOTAL summary rows
+            if pd.isna(date_val) if not isinstance(date_val, str) else False:
+                continue
             if 'TOTAL' in str(date_val).upper():
                 continue
             total_val = row[total_col]
@@ -143,6 +146,9 @@ def parse_excel(file_path, hourly_rate=516, ignore_mismatch=False):
         for r in raw_rows:
             try:
                 date = pd.to_datetime(r['date_val'], dayfirst=use_dayfirst)
+                # Guard against NaT - skip entries where date conversion failed silently
+                if pd.isna(date):
+                    continue
                 entries.append({
                     'date': date.date(),
                     'hours': r['hours'],
@@ -165,8 +171,9 @@ def group_into_biweeks(entries):
     min_date = min(e['date'] for e in entries)
     max_date = max(e['date'] for e in entries)
     
-    # Use the exact first date from the excel file, do not force shift to Monday
-    current_start = min_date
+    # Align to the Monday of the first entry's week so that all dates
+    # within the same calendar week are grouped on the same PDF sheet.
+    current_start = get_week_monday(min_date)
 
     periods = []
     while current_start <= max_date:
@@ -297,7 +304,7 @@ def _build_week_maps(biweek):
 # Default no-op callback
 # ----------------------------------------------------------------------
 
-def _noop_progress(msg, step=None, total=None):
+def _noop_progress(msg, step=None, total=None, **kwargs):
     """Fallback: just print to console."""
     print(f"[Bot] {msg}")
 
